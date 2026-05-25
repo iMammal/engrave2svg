@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual env
+.venv/
+
+# PyCharm
+.idea/
+
+# macOS
+.DS_Store
+
+# Generated outputs
+debug*/
+bbcOchre1/
+*.svg
+*.png
+
+# Testing outputs
+output*.svg
