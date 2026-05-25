@@ -1,0 +1,5 @@
+numpy>=1.26
+opencv-python>=4.8
+scikit-image>=0.22
+svgwrite>=1.4
+networkx>=3.2
