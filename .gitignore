@@ -13,9 +13,11 @@ __pycache__/
 
 # Generated outputs
 debug*/
+sensitivity*/
 bbcOchre1/
 *.svg
 *.png
 
 # Testing outputs
 output*.svg
+/runs/

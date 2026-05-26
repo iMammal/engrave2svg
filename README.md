@@ -7,9 +7,11 @@
 Use Python 3.11 or newer.
 
 ```bash
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+python -m pip install -r requirements.txt
+python -m pip install -e .
+python engrave2svg.py --help
 ```
 
 The default pipeline is CPU-only and uses OpenCV, scikit-image, numpy, svgwrite, and networkx.
@@ -18,6 +20,12 @@ The default pipeline is CPU-only and uses OpenCV, scikit-image, numpy, svgwrite,
 
 ```bash
 python engrave2svg.py input.png --output output.svg --crop auto --debug debug/
+```
+
+Installed console script usage is also supported:
+
+```bash
+engrave2svg input.png --output output.svg --crop auto --debug debug/
 ```
 
 Crop options:
@@ -35,6 +43,8 @@ Useful tuning parameters:
 --adaptive-c -5
 --morph-kernel-size 3
 --min-component-size 12
+--clahe-clip-limit 2.0
+--auto-crop-padding 8
 --simplification-epsilon 1.25
 ```
 
@@ -59,6 +69,30 @@ Lower `--morph-kernel-size` and `--simplification-epsilon` when fine topology is
 
 Debug output names are `01_cropped.png` through `10_final_skeleton.png`.
 
+## Sensitivity Runs
+
+Use `--sensitivity` to run a deterministic local parameter sweep. The sweep is still CPU-only; `--jobs` controls local multiprocessing only.
+
+```bash
+python engrave2svg.py input.png \
+  --sensitivity \
+  --sensitivity-dir sensitivity \
+  --jobs 4
+```
+
+This writes one row per trial to `sensitivity/sensitivity_summary.csv`. Every row records the full parameter set, input path, output SVG path, debug directory, measured tracing counts, and the standalone command used for that trial.
+
+Each trial also gets its own directory:
+
+```text
+sensitivity/trials/trial_0000/params.json
+sensitivity/trials/trial_0000/command.txt
+sensitivity/trials/trial_0000/output.svg
+sensitivity/trials/trial_0000/debug/*.png
+```
+
+The `command.txt` files are independent single-image commands so the same trial layout can later be dispatched as SLURM array jobs. See `docs/hpc_delta_slurm.md` for a CPU-only NCSA Delta example. This branch does not add GPU or HPC acceleration.
+
 ## Example
 
 ```bash
@@ -78,7 +112,7 @@ An example SVG is already included at `examples/synthetic_output.svg`.
 ## Tests
 
 ```bash
-pytest
+python -m pytest
 ```
 
 The tests use synthetic line drawings to check crop behavior, skeletonization, junction splitting, simplification, and SVG export.
