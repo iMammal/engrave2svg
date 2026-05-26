@@ -55,6 +55,8 @@ def build_default_trials(
             simplification_epsilon=_trial_epsilon(base_config, index),
             stroke_width=base_config.stroke_width,
             node_merge_radius=_trial_node_merge_radius(base_config, index),
+            bridge_gaps_radius=base_config.bridge_gaps_radius,
+            bridge_gaps_angle_tolerance=base_config.bridge_gaps_angle_tolerance,
         )
         command = build_trial_command(
             launcher=launcher,
@@ -168,6 +170,10 @@ def build_trial_command(
         str(values["stroke_width"]),
         "--node-merge-radius",
         str(values["node_merge_radius"]),
+        "--bridge-gaps-radius",
+        str(values["bridge_gaps_radius"]),
+        "--bridge-gaps-angle-tolerance",
+        str(values["bridge_gaps_angle_tolerance"]),
     ]
     return " ".join(shlex.quote(arg) for arg in args)
 
@@ -242,6 +248,7 @@ def _write_summary_json(path: Path, rows: list[dict[str, object]]) -> None:
             "merged_edge_count": _numeric_stability(ordered, "merged_edge_count"),
             "connected_components": _numeric_stability(ordered, "connected_components"),
             "total_traced_length_px": _numeric_stability(ordered, "total_traced_length_px"),
+            "bridge_count": _numeric_stability(ordered, "bridge_count"),
             "dominant_angle_peaks": _peak_stability(ordered),
         },
     }

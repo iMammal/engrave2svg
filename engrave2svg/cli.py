@@ -42,6 +42,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Merge raw endpoint/junction nodes within this pixel radius for final graph metrics. Default: 0.0.",
     )
+    parser.add_argument(
+        "--bridge-gaps-radius",
+        type=float,
+        default=0.0,
+        help="Conservatively bridge compatible preliminary skeleton endpoints within this pixel radius. Default: 0.0.",
+    )
+    parser.add_argument(
+        "--bridge-gaps-angle-tolerance",
+        type=float,
+        default=30.0,
+        help="Maximum endpoint direction mismatch in degrees for optional gap bridging. Default: 30.0.",
+    )
     parser.add_argument("--metrics", help="Output metrics JSON path.")
     parser.add_argument(
         "--graph",
@@ -97,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         simplification_epsilon=args.simplification_epsilon,
         stroke_width=args.stroke_width,
         node_merge_radius=args.node_merge_radius,
+        bridge_gaps_radius=args.bridge_gaps_radius,
+        bridge_gaps_angle_tolerance=args.bridge_gaps_angle_tolerance,
     )
 
     if args.sensitivity:

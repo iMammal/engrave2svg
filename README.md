@@ -47,9 +47,12 @@ Useful tuning parameters:
 --auto-crop-padding 8
 --simplification-epsilon 1.25
 --node-merge-radius 0.0
+--bridge-gaps-radius 0.0
+--bridge-gaps-angle-tolerance 30.0
 ```
 
 Lower `--morph-kernel-size` and `--simplification-epsilon` when fine topology is being lost. Raise `--min-component-size` when isolated noise becomes exported paths.
+Use `--bridge-gaps-radius` only when faint but visually continuous strokes break into disconnected fragments. Radius `0.0` keeps the historical behavior unchanged. When bridging is enabled, endpoints are connected only when preliminary skeleton endpoint directions face each other, local orientation is compatible, the distance is within radius, and the intervening gap is clear.
 
 Scientific data outputs:
 
@@ -72,18 +75,19 @@ Scientific data outputs:
 5. Normalize local contrast with CLAHE.
 6. Threshold foreground tracing strokes.
 7. Morphologically clean and remove small components.
-8. Skeletonize strokes to one-pixel centerlines.
-9. Detect endpoints and junctions by 8-neighborhood degree.
-10. Convert skeleton pixels to a graph.
-11. Trace graph edges into polylines split at junctions.
-12. Simplify with Douglas-Peucker.
-13. Build raw and merged engraving graphs for scientific analysis.
-14. Compute node degree, connected component, length, and orientation statistics.
-15. Export GraphML/GEXF, node CSV, edge CSV, metrics JSON, and orientation histogram when requested.
-16. Export editable SVG polylines as a visual artifact.
-17. Save stage-by-stage diagnostic PNGs.
+8. Optionally skeletonize a preliminary mask and bridge conservative endpoint-to-endpoint gaps.
+9. Skeletonize the cleaned or bridged strokes to one-pixel centerlines.
+10. Detect endpoints and junctions by 8-neighborhood degree.
+11. Convert skeleton pixels to a graph.
+12. Trace graph edges into polylines split at junctions.
+13. Simplify with Douglas-Peucker.
+14. Build raw and merged engraving graphs for scientific analysis.
+15. Compute node degree, connected component, length, and orientation statistics.
+16. Export GraphML/GEXF, node CSV, edge CSV, metrics JSON, and orientation histogram when requested.
+17. Export editable SVG polylines as a visual artifact.
+18. Save stage-by-stage diagnostic PNGs.
 
-Debug output names are `01_cropped.png` through `11_merged_nodes.png`.
+Debug output names are `01_cropped.png` through `11_merged_nodes.png`, including `06a_bridged.png` after optional gap bridging.
 
 The SVG is not the canonical research output. It is useful for inspection and illustration, but the GraphML/GEXF, CSV, and JSON files are the reproducible data products for analysis, review, and downstream statistics.
 
@@ -96,10 +100,11 @@ python engrave2svg.py input.png \
   --sensitivity \
   --sensitivity-dir sensitivity \
   --node-merge-radius 2.0 \
+  --bridge-gaps-radius 0.0 \
   --jobs 4
 ```
 
-This writes one row per trial to `sensitivity/sensitivity_summary.csv` and a machine-readable aggregate to `sensitivity/sensitivity_summary.json`. Every row records the full parameter set, input path, output SVG path, debug directory, graph export paths, measured tracing counts, raw and merged node counts, connected components, total traced length, dominant orientation peaks, and the standalone command used for that trial.
+This writes one row per trial to `sensitivity/sensitivity_summary.csv` and a machine-readable aggregate to `sensitivity/sensitivity_summary.json`. Every row records the full parameter set, input path, output SVG path, debug directory, graph export paths, measured tracing counts, bridge count, raw and merged node counts, connected components, total traced length, dominant orientation peaks, and the standalone command used for that trial.
 
 Each trial also gets its own directory:
 
@@ -136,6 +141,7 @@ python engrave2svg.py input.png \
   --morph-kernel-size 1 \
   --min-component-size 12 \
   --simplification-epsilon 3.0 \
+  --bridge-gaps-radius 0.0 \
   --crop auto
 ```
 
@@ -168,6 +174,7 @@ The tests use synthetic line drawings to check crop behavior, skeletonization, j
 - Broken strokes: thresholding or morphology can split faint engraved lines. Try adaptive thresholding, lower the global threshold, reduce denoising, or use a smaller morphology kernel.
 - False joins: close parallel strokes can merge during thresholding or closing. Reduce `--morph-kernel-size` and inspect `05_thresholded.png` and `06_cleaned.png`.
 - Noisy intersections: anti-aliased crossings often create clusters of junction pixels rather than one clean node. The tracer preserves topology but may emit several short paths around the intersection.
+- Over-bridging: `--bridge-gaps-radius` is conservative, but any nonzero value can change topology. Inspect `06a_bridged.png` and the `bridges` list in the metrics JSON; lower the radius or angle tolerance if nearby strokes are incorrectly connected.
 - Node consolidation risk: `--node-merge-radius` reports both raw and merged graph statistics. Keep the raw GraphML/CSV files with the merged outputs so reviewers can audit any topology changes.
 - Anti-aliasing artifacts: pale edge pixels can become small side branches after skeletonization. Increase `--min-component-size`, use a slightly higher threshold, or crop more tightly.
 - Over-simplification: Douglas-Peucker can move bends away from the original centerline. Lower `--simplification-epsilon` or set it to `0` for raw traced paths.
@@ -177,4 +184,4 @@ The tests use synthetic line drawings to check crop behavior, skeletonization, j
 
 The exported SVG uses one `<polyline>` per traced segment with stable IDs like `path-0000`. Coordinates are relative to the cropped panel, not the original full image. Keep the debug directory with the SVG when recording provenance; it captures the exact intermediate stages that led to the vector result.
 
-For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, node degree distributions, connected components, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, and node-merge perturbations so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.
+For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, optional bridge parameters and bridge records, node degree distributions, connected components, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, node-merge, and bridge-parameter settings so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.

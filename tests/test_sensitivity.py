@@ -27,6 +27,8 @@ def test_build_default_trials_records_reproducible_commands(tmp_path: Path):
     assert "--threshold-mode global" in trials[0].command
     assert "--simplification-epsilon 0.0" in trials[0].command
     assert "--node-merge-radius 0.0" in trials[0].command
+    assert "--bridge-gaps-radius 0.0" in trials[0].command
+    assert "--bridge-gaps-angle-tolerance 30.0" in trials[0].command
     assert trials[1].command_txt.name == "command.txt"
 
 
@@ -60,8 +62,12 @@ def test_run_sensitivity_writes_one_summary_row_per_trial(tmp_path: Path):
     assert Path(rows[0]["graph_raw"]).exists()
     assert Path(rows[0]["graph_merged"]).exists()
     assert rows[0]["node_merge_radius"] == "0.0"
+    assert rows[0]["bridge_gaps_radius"] == "0.0"
+    assert rows[0]["bridge_gaps_angle_tolerance"] == "30.0"
+    assert rows[0]["bridge_count"] == "0"
     assert "merged_node_count" in rows[0]
     assert "dominant_angle_peaks" in rows[0]
-    assert (summary_path.parent / "sensitivity_summary.json").exists()
+    summary_json = json.loads((summary_path.parent / "sensitivity_summary.json").read_text())
+    assert "bridge_count" in summary_json["stability"]
     params = json.loads(Path(rows[0]["params_json"]).read_text())
     assert params["parameters"]["crop"] == "none"

@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .gap_bridge import bridge_gaps, save_gap_bridge_debug
 from .graph_metrics import (
     build_engraving_graphs,
     save_merged_nodes_debug,
@@ -30,12 +31,16 @@ class PipelineConfig:
     simplification_epsilon: float = 1.25
     stroke_width: float = 1.2
     node_merge_radius: float = 0.0
+    bridge_gaps_radius: float = 0.0
+    bridge_gaps_angle_tolerance: float = 30.0
 
     def to_flat_dict(self) -> dict[str, object]:
         values = asdict(self.preprocess)
         values["simplification_epsilon"] = self.simplification_epsilon
         values["stroke_width"] = self.stroke_width
         values["node_merge_radius"] = self.node_merge_radius
+        values["bridge_gaps_radius"] = self.bridge_gaps_radius
+        values["bridge_gaps_angle_tolerance"] = self.bridge_gaps_angle_tolerance
         return values
 
 
@@ -54,7 +59,10 @@ class PipelineMetrics:
     paths: int
     endpoints: int
     junctions: int
+    bridge_count: int
     node_merge_radius: float
+    bridge_gaps_radius: float
+    bridge_gaps_angle_tolerance: float
     raw_node_count: int
     raw_endpoint_count: int
     raw_junction_count: int
@@ -96,7 +104,12 @@ def run_pipeline(
 ) -> PipelineMetrics:
     image = load_image(input_path)
     preprocessed = preprocess_image(image, config.preprocess)
-    skeleton = skeletonize_binary(preprocessed.cleaned)
+    bridge_result = bridge_gaps(
+        preprocessed.cleaned,
+        radius=config.bridge_gaps_radius,
+        angle_tolerance=config.bridge_gaps_angle_tolerance,
+    )
+    skeleton = skeletonize_binary(bridge_result.bridged)
     analysis = analyze_skeleton(skeleton)
     trace = trace_skeleton(analysis.skeleton)
     polylines = simplify_polylines(trace.polylines, config.simplification_epsilon)
@@ -122,6 +135,7 @@ def run_pipeline(
         debug_path = Path(debug_dir)
         debug = str(debug_path)
         save_preprocess_debug(preprocessed, debug_path)
+        save_gap_bridge_debug(bridge_result, debug_path)
         save_skeleton_debug(analysis, debug_path)
         save_trace_debug(analysis.skeleton, polylines, debug_path)
         cv2.imwrite(str(debug_path / "10_final_skeleton.png"), analysis.skeleton)
@@ -137,7 +151,13 @@ def run_pipeline(
         write_orientation_histogram(orientation_hist_path, graph_bundle.orientation)
         written["orientation_histogram"] = str(orientation_hist_path)
 
-    graph_metrics = graph_bundle.metrics
+    graph_metrics = {
+        **graph_bundle.metrics,
+        "bridge_gaps_radius": float(config.bridge_gaps_radius),
+        "bridge_gaps_angle_tolerance": float(config.bridge_gaps_angle_tolerance),
+        "bridge_count": bridge_result.bridge_count,
+        "bridges": bridge_result.bridges_as_dicts(),
+    }
     orientation = graph_bundle.orientation
     merged = graph_metrics["merged"]
     pipeline_metrics = PipelineMetrics(
@@ -154,7 +174,10 @@ def run_pipeline(
         paths=len(polylines),
         endpoints=len(analysis.endpoints),
         junctions=len(analysis.junctions),
+        bridge_count=bridge_result.bridge_count,
         node_merge_radius=config.node_merge_radius,
+        bridge_gaps_radius=config.bridge_gaps_radius,
+        bridge_gaps_angle_tolerance=config.bridge_gaps_angle_tolerance,
         raw_node_count=int(graph_metrics["raw_node_count"]),
         raw_endpoint_count=int(graph_metrics["raw_endpoint_count"]),
         raw_junction_count=int(graph_metrics["raw_junction_count"]),
