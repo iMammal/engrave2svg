@@ -37,6 +37,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simplification-epsilon", type=float, default=1.25)
     parser.add_argument("--stroke-width", type=float, default=1.2)
     parser.add_argument(
+        "--node-merge-radius",
+        type=float,
+        default=0.0,
+        help="Merge raw endpoint/junction nodes within this pixel radius for final graph metrics. Default: 0.0.",
+    )
+    parser.add_argument("--metrics", help="Output metrics JSON path.")
+    parser.add_argument(
+        "--graph",
+        help="GraphML or GEXF base path. Writes *_raw and *_merged graph files.",
+    )
+    parser.add_argument(
+        "--nodes-csv",
+        help="Nodes CSV base path. Writes *_raw and *_merged CSV files.",
+    )
+    parser.add_argument(
+        "--edges-csv",
+        help="Edges CSV base path. Writes *_raw and *_merged CSV files.",
+    )
+    parser.add_argument(
+        "--orientation-hist",
+        help="Output PNG path for the length-weighted orientation histogram.",
+    )
+    parser.add_argument(
         "--sensitivity",
         action="store_true",
         help="Run the default deterministic parameter sensitivity batch.",
@@ -73,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         preprocess=params,
         simplification_epsilon=args.simplification_epsilon,
         stroke_width=args.stroke_width,
+        node_merge_radius=args.node_merge_radius,
     )
 
     if args.sensitivity:
@@ -93,11 +117,17 @@ def main(argv: list[str] | None = None) -> int:
         output_path=Path(args.output),
         debug_dir=args.debug,
         config=config,
+        metrics_path=args.metrics,
+        graph_path=args.graph,
+        nodes_csv_path=args.nodes_csv,
+        edges_csv_path=args.edges_csv,
+        orientation_hist_path=args.orientation_hist,
     )
 
     print(
         f"Wrote {metrics.output_svg} with {metrics.paths} paths "
-        f"({metrics.endpoints} endpoints, {metrics.junctions} junctions)."
+        f"({metrics.merged_endpoint_count} merged endpoints, "
+        f"{metrics.merged_junction_count} merged junctions)."
     )
     return 0
 

@@ -46,9 +46,22 @@ Useful tuning parameters:
 --clahe-clip-limit 2.0
 --auto-crop-padding 8
 --simplification-epsilon 1.25
+--node-merge-radius 0.0
 ```
 
 Lower `--morph-kernel-size` and `--simplification-epsilon` when fine topology is being lost. Raise `--min-component-size` when isolated noise becomes exported paths.
+
+Scientific data outputs:
+
+```bash
+--metrics output_metrics.json
+--graph output.graphml
+--nodes-csv output_nodes.csv
+--edges-csv output_edges.csv
+--orientation-hist output_orientation_histogram.png
+```
+
+`--graph`, `--nodes-csv`, and `--edges-csv` write paired audit files with `_raw` and `_merged` suffixes. For example, `--graph output.graphml` writes `output_raw.graphml` and `output_merged.graphml`. The raw graph preserves endpoint and junction pixels before consolidation. The merged graph applies `--node-merge-radius` and reports the radius, raw counts, merged counts, and merge report in the metrics JSON.
 
 ## Pipeline
 
@@ -64,10 +77,15 @@ Lower `--morph-kernel-size` and `--simplification-epsilon` when fine topology is
 10. Convert skeleton pixels to a graph.
 11. Trace graph edges into polylines split at junctions.
 12. Simplify with Douglas-Peucker.
-13. Export editable SVG polylines.
-14. Save stage-by-stage diagnostic PNGs.
+13. Build raw and merged engraving graphs for scientific analysis.
+14. Compute node degree, connected component, length, and orientation statistics.
+15. Export GraphML/GEXF, node CSV, edge CSV, metrics JSON, and orientation histogram when requested.
+16. Export editable SVG polylines as a visual artifact.
+17. Save stage-by-stage diagnostic PNGs.
 
-Debug output names are `01_cropped.png` through `10_final_skeleton.png`.
+Debug output names are `01_cropped.png` through `11_merged_nodes.png`.
+
+The SVG is not the canonical research output. It is useful for inspection and illustration, but the GraphML/GEXF, CSV, and JSON files are the reproducible data products for analysis, review, and downstream statistics.
 
 ## Sensitivity Runs
 
@@ -77,10 +95,11 @@ Use `--sensitivity` to run a deterministic local parameter sweep. The sweep is s
 python engrave2svg.py input.png \
   --sensitivity \
   --sensitivity-dir sensitivity \
+  --node-merge-radius 2.0 \
   --jobs 4
 ```
 
-This writes one row per trial to `sensitivity/sensitivity_summary.csv`. Every row records the full parameter set, input path, output SVG path, debug directory, measured tracing counts, and the standalone command used for that trial.
+This writes one row per trial to `sensitivity/sensitivity_summary.csv` and a machine-readable aggregate to `sensitivity/sensitivity_summary.json`. Every row records the full parameter set, input path, output SVG path, debug directory, graph export paths, measured tracing counts, raw and merged node counts, connected components, total traced length, dominant orientation peaks, and the standalone command used for that trial.
 
 Each trial also gets its own directory:
 
@@ -88,12 +107,39 @@ Each trial also gets its own directory:
 sensitivity/trials/trial_0000/params.json
 sensitivity/trials/trial_0000/command.txt
 sensitivity/trials/trial_0000/output.svg
+sensitivity/trials/trial_0000/metrics.json
+sensitivity/trials/trial_0000/graph_raw.graphml
+sensitivity/trials/trial_0000/graph_merged.graphml
+sensitivity/trials/trial_0000/nodes_raw.csv
+sensitivity/trials/trial_0000/nodes_merged.csv
+sensitivity/trials/trial_0000/edges_raw.csv
+sensitivity/trials/trial_0000/edges_merged.csv
+sensitivity/trials/trial_0000/orientation_histogram.png
 sensitivity/trials/trial_0000/debug/*.png
 ```
 
 The `command.txt` files are independent single-image commands so the same trial layout can later be dispatched as SLURM array jobs. See `docs/hpc_delta_slurm.md` for a CPU-only NCSA Delta example. This branch does not add GPU or HPC acceleration.
 
 ## Example
+
+```bash
+python engrave2svg.py input.png \
+  --output output.svg \
+  --metrics output_metrics.json \
+  --graph output.graphml \
+  --nodes-csv output_nodes.csv \
+  --edges-csv output_edges.csv \
+  --orientation-hist output_orientation_histogram.png \
+  --debug debug \
+  --threshold-mode global \
+  --threshold-value 180 \
+  --morph-kernel-size 1 \
+  --min-component-size 12 \
+  --simplification-epsilon 3.0 \
+  --crop auto
+```
+
+The repository example script is still available:
 
 ```bash
 bash scripts/run_example.sh
@@ -115,13 +161,14 @@ An example SVG is already included at `examples/synthetic_output.svg`.
 python -m pytest
 ```
 
-The tests use synthetic line drawings to check crop behavior, skeletonization, junction splitting, simplification, and SVG export.
+The tests use synthetic line drawings to check crop behavior, skeletonization, junction splitting, simplification, graph metrics, node merging, orientation families, sensitivity summaries, and SVG export.
 
 ## Failure Modes
 
 - Broken strokes: thresholding or morphology can split faint engraved lines. Try adaptive thresholding, lower the global threshold, reduce denoising, or use a smaller morphology kernel.
 - False joins: close parallel strokes can merge during thresholding or closing. Reduce `--morph-kernel-size` and inspect `05_thresholded.png` and `06_cleaned.png`.
 - Noisy intersections: anti-aliased crossings often create clusters of junction pixels rather than one clean node. The tracer preserves topology but may emit several short paths around the intersection.
+- Node consolidation risk: `--node-merge-radius` reports both raw and merged graph statistics. Keep the raw GraphML/CSV files with the merged outputs so reviewers can audit any topology changes.
 - Anti-aliasing artifacts: pale edge pixels can become small side branches after skeletonization. Increase `--min-component-size`, use a slightly higher threshold, or crop more tightly.
 - Over-simplification: Douglas-Peucker can move bends away from the original centerline. Lower `--simplification-epsilon` or set it to `0` for raw traced paths.
 - Auto-crop misses the panel: use `--crop none` for pre-cropped images or pass `--crop x,y,width,height`.
@@ -129,3 +176,5 @@ The tests use synthetic line drawings to check crop behavior, skeletonization, j
 ## Notes for Field Use
 
 The exported SVG uses one `<polyline>` per traced segment with stable IDs like `path-0000`. Coordinates are relative to the cropped panel, not the original full image. Keep the debug directory with the SVG when recording provenance; it captures the exact intermediate stages that led to the vector result.
+
+For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, node degree distributions, connected components, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, and node-merge perturbations so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.

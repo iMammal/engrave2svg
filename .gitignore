@@ -21,6 +21,11 @@ __pycache__/
 
 # Large generated artifacts
 output*.svg
+output*.json
+output*.csv
+output*.graphml
+output*.gexf
+output*_histogram.png
 
 # Generated debug images only
 debug*.png
