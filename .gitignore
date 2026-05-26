@@ -2,22 +2,32 @@
 __pycache__/
 *.pyc
 
-# Virtual env
+# Virtual environments
 .venv/
 
-# PyCharm
+# IDE
 .idea/
 
 # macOS
 .DS_Store
 
-# Generated outputs
-debug*/
-sensitivity*/
-bbcOchre1/
-*.svg
-*.png
-
-# Testing outputs
-output*.svg
+# Generated experiment/debug directories
 /runs/
+/sweeps/
+/sensitivity*/
+/debug*/
+/bbcOchre*/
+/SandArt/
+
+# Large generated artifacts
+output*.svg
+
+# Generated debug images only
+debug*.png
+
+# Optional: generated sensitivity manifests
+sensitivity_summary.csv
+sensitivity_manifest.csv
+
+.pytest_cache/
+.mypy_cache/
