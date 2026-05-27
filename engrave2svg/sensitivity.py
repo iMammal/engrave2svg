@@ -52,11 +52,13 @@ def build_default_trials(
         orientation_hist = trial_dir / "orientation_histogram.png"
         config = PipelineConfig(
             preprocess=preprocess,
+            extraction_mode=base_config.extraction_mode,
             simplification_epsilon=_trial_epsilon(base_config, index),
             stroke_width=base_config.stroke_width,
             node_merge_radius=_trial_node_merge_radius(base_config, index),
             bridge_gaps_radius=base_config.bridge_gaps_radius,
             bridge_gaps_angle_tolerance=base_config.bridge_gaps_angle_tolerance,
+            ridge=base_config.ridge,
         )
         command = build_trial_command(
             launcher=launcher,
@@ -144,6 +146,8 @@ def build_trial_command(
         str(edges_csv),
         "--orientation-hist",
         str(orientation_hist),
+        "--extraction-mode",
+        str(values["extraction_mode"]),
         "--crop",
         str(values["crop"]),
         "--threshold-mode",
@@ -174,6 +178,14 @@ def build_trial_command(
         str(values["bridge_gaps_radius"]),
         "--bridge-gaps-angle-tolerance",
         str(values["bridge_gaps_angle_tolerance"]),
+        "--ridge-sigmas",
+        str(values["ridge_sigmas"]),
+        "--ridge-beta",
+        str(values["ridge_beta"]),
+        "--ridge-gamma",
+        str(values["ridge_gamma"]),
+        "--ridge-threshold",
+        str(values["ridge_threshold"]),
     ]
     return " ".join(shlex.quote(arg) for arg in args)
 

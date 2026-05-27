@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .pipeline import PipelineConfig, run_pipeline
 from .preprocessing import PreprocessParams
+from .ridge_extraction import RidgeParams, parse_sigmas
 from .sensitivity import run_sensitivity
 
 
@@ -21,6 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Crop mode: auto, none, or manual x,y,width,height. Default: auto.",
     )
     parser.add_argument("--debug", help="Directory for diagnostic stage images.")
+    parser.add_argument(
+        "--extraction-mode",
+        choices=("threshold", "ridge"),
+        default="threshold",
+        help="Extraction mode. 'threshold' preserves the existing threshold pipeline; 'ridge' is experimental. Default: threshold.",
+    )
     parser.add_argument(
         "--threshold-mode",
         choices=("otsu", "global", "adaptive"),
@@ -53,6 +60,29 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Maximum endpoint direction mismatch in degrees for optional gap bridging. Default: 30.0.",
+    )
+    parser.add_argument(
+        "--ridge-sigmas",
+        default="1,2,3",
+        help="Comma-separated Frangi ridge scales for --extraction-mode ridge. Default: 1,2,3.",
+    )
+    parser.add_argument(
+        "--ridge-beta",
+        type=float,
+        default=0.5,
+        help="Frangi beta parameter for --extraction-mode ridge. Default: 0.5.",
+    )
+    parser.add_argument(
+        "--ridge-gamma",
+        type=float,
+        default=15.0,
+        help="Frangi gamma parameter for --extraction-mode ridge. Default: 15.0.",
+    )
+    parser.add_argument(
+        "--ridge-threshold",
+        type=float,
+        default=0.05,
+        help="Threshold on normalized ridge response for --extraction-mode ridge. Default: 0.05.",
     )
     parser.add_argument("--metrics", help="Output metrics JSON path.")
     parser.add_argument(
@@ -106,11 +136,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     config = PipelineConfig(
         preprocess=params,
+        extraction_mode=args.extraction_mode,
         simplification_epsilon=args.simplification_epsilon,
         stroke_width=args.stroke_width,
         node_merge_radius=args.node_merge_radius,
         bridge_gaps_radius=args.bridge_gaps_radius,
         bridge_gaps_angle_tolerance=args.bridge_gaps_angle_tolerance,
+        ridge=RidgeParams(
+            sigmas=parse_sigmas(args.ridge_sigmas),
+            beta=args.ridge_beta,
+            gamma=args.ridge_gamma,
+            threshold=args.ridge_threshold,
+        ),
     )
 
     if args.sensitivity:

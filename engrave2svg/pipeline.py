@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cv2
@@ -21,6 +21,7 @@ from .preprocessing import (
     preprocess_image,
     save_preprocess_debug,
 )
+from .ridge_extraction import RidgeParams, extract_ridges, save_ridge_debug
 from .skeleton import analyze_skeleton, save_skeleton_debug, skeletonize_binary
 from .svg_export import export_svg
 
@@ -28,19 +29,23 @@ from .svg_export import export_svg
 @dataclass(frozen=True)
 class PipelineConfig:
     preprocess: PreprocessParams
+    extraction_mode: str = "threshold"
     simplification_epsilon: float = 1.25
     stroke_width: float = 1.2
     node_merge_radius: float = 0.0
     bridge_gaps_radius: float = 0.0
     bridge_gaps_angle_tolerance: float = 30.0
+    ridge: RidgeParams = field(default_factory=RidgeParams)
 
     def to_flat_dict(self) -> dict[str, object]:
         values = asdict(self.preprocess)
+        values["extraction_mode"] = self.extraction_mode
         values["simplification_epsilon"] = self.simplification_epsilon
         values["stroke_width"] = self.stroke_width
         values["node_merge_radius"] = self.node_merge_radius
         values["bridge_gaps_radius"] = self.bridge_gaps_radius
         values["bridge_gaps_angle_tolerance"] = self.bridge_gaps_angle_tolerance
+        values.update(self.ridge.to_dict())
         return values
 
 
@@ -53,6 +58,12 @@ class PipelineMetrics:
     crop_width: int
     crop_height: int
     foreground_pixels: int
+    extraction_mode: str
+    ridge_sigmas: str
+    ridge_beta: float
+    ridge_gamma: float
+    ridge_threshold: float
+    ridge_mask_pixels: int
     skeleton_pixels: int
     graph_nodes: int
     graph_edges: int
@@ -107,8 +118,21 @@ def run_pipeline(
 ) -> PipelineMetrics:
     image = load_image(input_path)
     preprocessed = preprocess_image(image, config.preprocess)
+    ridge_result = None
+    if config.extraction_mode == "threshold":
+        extraction_mask = preprocessed.cleaned
+    elif config.extraction_mode == "ridge":
+        ridge_result = extract_ridges(
+            preprocessed.normalized,
+            config.ridge,
+            min_component_size=config.preprocess.min_component_size,
+        )
+        extraction_mask = ridge_result.skeleton
+    else:
+        raise ValueError(f"Unsupported extraction mode: {config.extraction_mode}")
+
     bridge_result = bridge_gaps(
-        preprocessed.cleaned,
+        extraction_mask,
         radius=config.bridge_gaps_radius,
         angle_tolerance=config.bridge_gaps_angle_tolerance,
     )
@@ -138,6 +162,7 @@ def run_pipeline(
         debug_path = Path(debug_dir)
         debug = str(debug_path)
         save_preprocess_debug(preprocessed, debug_path)
+        save_ridge_debug(ridge_result, preprocessed.normalized, debug_path)
         save_gap_bridge_debug(bridge_result, debug_path)
         save_skeleton_debug(analysis, debug_path)
         save_trace_debug(analysis.skeleton, polylines, debug_path)
@@ -156,6 +181,9 @@ def run_pipeline(
 
     graph_metrics = {
         **graph_bundle.metrics,
+        "extraction_mode": config.extraction_mode,
+        **config.ridge.to_dict(),
+        "ridge_mask_pixels": int(np.count_nonzero(ridge_result.mask)) if ridge_result else 0,
         "bridge_gaps_radius": float(config.bridge_gaps_radius),
         "bridge_gaps_angle_tolerance": float(config.bridge_gaps_angle_tolerance),
         "bridge_count": bridge_result.bridge_count,
@@ -170,7 +198,13 @@ def run_pipeline(
         crop_y=preprocessed.crop_box.y,
         crop_width=preprocessed.crop_box.width,
         crop_height=preprocessed.crop_box.height,
-        foreground_pixels=int(np.count_nonzero(preprocessed.cleaned)),
+        foreground_pixels=int(np.count_nonzero(extraction_mask)),
+        extraction_mode=config.extraction_mode,
+        ridge_sigmas=config.ridge.to_dict()["ridge_sigmas"],
+        ridge_beta=config.ridge.beta,
+        ridge_gamma=config.ridge.gamma,
+        ridge_threshold=config.ridge.threshold,
+        ridge_mask_pixels=int(np.count_nonzero(ridge_result.mask)) if ridge_result else 0,
         skeleton_pixels=int(np.count_nonzero(analysis.skeleton)),
         graph_nodes=trace.graph.number_of_nodes(),
         graph_edges=trace.graph.number_of_edges(),

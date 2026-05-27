@@ -37,6 +37,7 @@ Crop options:
 Useful tuning parameters:
 
 ```bash
+--extraction-mode threshold|ridge
 --threshold-mode otsu|global|adaptive
 --threshold-value 128
 --adaptive-block-size 35
@@ -49,10 +50,16 @@ Useful tuning parameters:
 --node-merge-radius 0.0
 --bridge-gaps-radius 0.0
 --bridge-gaps-angle-tolerance 30.0
+--ridge-sigmas 1,2,3
+--ridge-beta 0.5
+--ridge-gamma 15.0
+--ridge-threshold 0.05
 ```
 
 Lower `--morph-kernel-size` and `--simplification-epsilon` when fine topology is being lost. Raise `--min-component-size` when isolated noise becomes exported paths.
 Use `--bridge-gaps-radius` only when faint but visually continuous strokes break into disconnected fragments. Radius `0.0` keeps the historical behavior unchanged. When bridging is enabled, endpoints are connected only when preliminary skeleton endpoint directions face each other, local orientation is compatible, the distance is within radius, and the intervening gap is clear.
+
+`--extraction-mode threshold` is the established default and preserves the existing global, adaptive, and Otsu threshold workflows. `--extraction-mode ridge` is experimental: it applies multi-scale Frangi ridge enhancement to the normalized grayscale image before thresholding, then feeds the ridge-derived skeleton mask into the same skeletonization, graph, metrics, and SVG stages. Ridge mode is intended for noisy archaeological imagery where engraved strokes are visually continuous but too faint for a single intensity threshold. It is conservative by design: response pixels must still have grayscale support, broad ridge masks are thinned before graph extraction, and all ridge parameters are recorded for reproducibility.
 
 Scientific data outputs:
 
@@ -73,10 +80,10 @@ Scientific data outputs:
 3. Convert to grayscale.
 4. Apply light median denoising.
 5. Normalize local contrast with CLAHE.
-6. Threshold foreground tracing strokes.
-7. Morphologically clean and remove small components.
+6. Extract foreground strokes with threshold mode, or experimentally enhance bright curvilinear ridges from the normalized grayscale image.
+7. Morphologically clean threshold masks, or thin ridge masks conservatively without aggressive region filling.
 8. Optionally skeletonize a preliminary mask and bridge conservative endpoint-to-endpoint gaps.
-9. Skeletonize the cleaned or bridged strokes to one-pixel centerlines.
+9. Skeletonize the cleaned, ridge-derived, or bridged strokes to one-pixel centerlines.
 10. Detect endpoints and junctions by 8-neighborhood degree.
 11. Convert skeleton pixels to a graph.
 12. Trace graph edges into polylines split at junctions.
@@ -87,7 +94,7 @@ Scientific data outputs:
 17. Export editable SVG polylines as a visual artifact.
 18. Save stage-by-stage diagnostic PNGs.
 
-Debug output names are `01_cropped.png` through `11_merged_nodes.png`, including `06a_bridged.png` after optional gap bridging. `11_merged_nodes.png` overlays component-colored graph edges, endpoint/junction/connector node classes, and node degrees so graph topology can be checked against the visible skeleton.
+Debug output names are `01_cropped.png` through `11_merged_nodes.png`, including `06a_bridged.png` after optional gap bridging. Ridge mode also writes `06b_ridge_response.png`, `06c_ridge_threshold_mask.png`, `06d_ridge_skeleton.png`, and `06e_ridge_overlay.png`. `11_merged_nodes.png` overlays component-colored graph edges, endpoint/junction/connector node classes, and node degrees so graph topology can be checked against the visible skeleton.
 
 The SVG is not the canonical research output. It is useful for inspection and illustration, but the GraphML/GEXF, CSV, and JSON files are the reproducible data products for analysis, review, and downstream statistics.
 
@@ -99,12 +106,13 @@ Use `--sensitivity` to run a deterministic local parameter sweep. The sweep is s
 python engrave2svg.py input.png \
   --sensitivity \
   --sensitivity-dir sensitivity \
+  --extraction-mode threshold \
   --node-merge-radius 2.0 \
   --bridge-gaps-radius 0.0 \
   --jobs 4
 ```
 
-This writes one row per trial to `sensitivity/sensitivity_summary.csv` and a machine-readable aggregate to `sensitivity/sensitivity_summary.json`. Every row records the full parameter set, input path, output SVG path, debug directory, graph export paths, measured tracing counts, bridge count, raw and merged node counts, connected components, total traced length, dominant orientation peaks, and the standalone command used for that trial.
+This writes one row per trial to `sensitivity/sensitivity_summary.csv` and a machine-readable aggregate to `sensitivity/sensitivity_summary.json`. Every row records the full parameter set, extraction mode, ridge parameters, input path, output SVG path, debug directory, graph export paths, measured tracing counts, bridge count, raw and merged node counts, connected components, total traced length, dominant orientation peaks, and the standalone command used for that trial.
 
 Each trial also gets its own directory:
 
@@ -136,12 +144,33 @@ python engrave2svg.py input.png \
   --edges-csv output_edges.csv \
   --orientation-hist output_orientation_histogram.png \
   --debug debug \
+  --extraction-mode threshold \
   --threshold-mode global \
   --threshold-value 180 \
   --morph-kernel-size 1 \
   --min-component-size 12 \
   --simplification-epsilon 3.0 \
   --bridge-gaps-radius 0.0 \
+  --crop auto
+```
+
+Experimental ridge extraction example:
+
+```bash
+python engrave2svg.py input.png \
+  --output output_ridge.svg \
+  --metrics output_ridge_metrics.json \
+  --debug debug_ridge \
+  --extraction-mode ridge \
+  --ridge-sigmas 1,2,3 \
+  --ridge-beta 0.5 \
+  --ridge-gamma 15.0 \
+  --ridge-threshold 0.05 \
+  --threshold-mode global \
+  --threshold-value 180 \
+  --morph-kernel-size 1 \
+  --min-component-size 12 \
+  --simplification-epsilon 3.0 \
   --crop auto
 ```
 
@@ -167,11 +196,12 @@ An example SVG is already included at `examples/synthetic_output.svg`.
 python -m pytest
 ```
 
-The tests use synthetic line drawings to check crop behavior, skeletonization, junction splitting, simplification, graph metrics, node merging, orientation families, sensitivity summaries, and SVG export.
+The tests use synthetic line drawings to check crop behavior, skeletonization, junction splitting, simplification, ridge extraction, graph metrics, node merging, orientation families, sensitivity summaries, and SVG export.
 
 ## Failure Modes
 
 - Broken strokes: thresholding or morphology can split faint engraved lines. Try adaptive thresholding, lower the global threshold, reduce denoising, or use a smaller morphology kernel.
+- Ridge artifacts: ridge mode can preserve faint continuity that thresholding misses, but low `--ridge-threshold` or broad `--ridge-sigmas` can create side branches or merge close strokes. Inspect `06b` through `06e` debug images and prefer the smallest scale range that preserves the target strokes.
 - False joins: close parallel strokes can merge during thresholding or closing. Reduce `--morph-kernel-size` and inspect `05_thresholded.png` and `06_cleaned.png`.
 - Noisy intersections: anti-aliased crossings often create clusters of junction pixels rather than one clean node. The tracer preserves topology but may emit several short paths around the intersection.
 - Over-bridging: `--bridge-gaps-radius` is conservative, but any nonzero value can change topology. Inspect `06a_bridged.png` and the `bridges` list in the metrics JSON; lower the radius or angle tolerance if nearby strokes are incorrectly connected.
@@ -184,4 +214,4 @@ The tests use synthetic line drawings to check crop behavior, skeletonization, j
 
 The exported SVG uses one `<polyline>` per traced segment with stable IDs like `path-0000`. Coordinates are relative to the cropped panel, not the original full image. Keep the debug directory with the SVG when recording provenance; it captures the exact intermediate stages that led to the vector result.
 
-For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, optional bridge parameters and bridge records, node degree histograms, connected component size histograms, largest connected component fraction, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, node-merge, and bridge-parameter settings so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.
+For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, extraction mode, ridge parameters, optional bridge parameters and bridge records, node degree histograms, connected component size histograms, largest connected component fraction, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, node-merge, bridge-parameter, and extraction-mode settings so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.
