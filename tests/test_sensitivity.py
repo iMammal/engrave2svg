@@ -67,6 +67,9 @@ def test_run_sensitivity_writes_one_summary_row_per_trial(tmp_path: Path):
     assert rows[0]["bridge_count"] == "0"
     assert "merged_node_count" in rows[0]
     assert "dominant_angle_peaks" in rows[0]
+    assert "node_degree_histogram" in rows[0]
+    assert "connected_component_size_histogram" in rows[0]
+    assert "largest_connected_component_fraction" in rows[0]
     summary_json = json.loads((summary_path.parent / "sensitivity_summary.json").read_text())
     assert "bridge_count" in summary_json["stability"]
     params = json.loads(Path(rows[0]["params_json"]).read_text())

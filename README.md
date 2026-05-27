@@ -87,7 +87,7 @@ Scientific data outputs:
 17. Export editable SVG polylines as a visual artifact.
 18. Save stage-by-stage diagnostic PNGs.
 
-Debug output names are `01_cropped.png` through `11_merged_nodes.png`, including `06a_bridged.png` after optional gap bridging.
+Debug output names are `01_cropped.png` through `11_merged_nodes.png`, including `06a_bridged.png` after optional gap bridging. `11_merged_nodes.png` overlays component-colored graph edges, endpoint/junction/connector node classes, and node degrees so graph topology can be checked against the visible skeleton.
 
 The SVG is not the canonical research output. It is useful for inspection and illustration, but the GraphML/GEXF, CSV, and JSON files are the reproducible data products for analysis, review, and downstream statistics.
 
@@ -184,4 +184,4 @@ The tests use synthetic line drawings to check crop behavior, skeletonization, j
 
 The exported SVG uses one `<polyline>` per traced segment with stable IDs like `path-0000`. Coordinates are relative to the cropped panel, not the original full image. Keep the debug directory with the SVG when recording provenance; it captures the exact intermediate stages that led to the vector result.
 
-For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, optional bridge parameters and bridge records, node degree distributions, connected components, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, node-merge, and bridge-parameter settings so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.
+For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, optional bridge parameters and bridge records, node degree histograms, connected component size histograms, largest connected component fraction, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, node-merge, and bridge-parameter settings so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.

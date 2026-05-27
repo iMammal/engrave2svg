@@ -78,6 +78,9 @@ class PipelineMetrics:
     orientation_circular_mean_deg: float
     orientation_circular_variance: float
     dominant_angle_peaks: str
+    node_degree_histogram: str
+    connected_component_size_histogram: str
+    largest_connected_component_fraction: float
     output_metrics: str = ""
     graph_raw: str = ""
     graph_merged: str = ""
@@ -193,6 +196,13 @@ def run_pipeline(
         orientation_circular_mean_deg=float(orientation["circular_mean_deg"]),
         orientation_circular_variance=float(orientation["circular_variance"]),
         dominant_angle_peaks=json_dumps_compact(graph_metrics["dominant_angle_peaks"]),
+        node_degree_histogram=json_dumps_compact(graph_metrics["node_degree_histogram"]),
+        connected_component_size_histogram=json_dumps_compact(
+            graph_metrics["connected_component_size_histogram"]
+        ),
+        largest_connected_component_fraction=float(
+            graph_metrics["largest_connected_component_fraction"]
+        ),
         output_metrics=str(metrics_path) if metrics_path else "",
         graph_raw=written.get("graph_raw", ""),
         graph_merged=written.get("graph_merged", ""),

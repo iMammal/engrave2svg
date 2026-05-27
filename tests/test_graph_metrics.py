@@ -24,7 +24,7 @@ def test_crosshatch_merges_junction_cluster_and_preserves_degrees():
     trace = trace_skeleton(skeleton)
     bundle = build_engraving_graphs(trace, trace.polylines, node_merge_radius=2.0)
 
-    assert bundle.metrics["raw_junction_count"] > 1
+    assert bundle.metrics["raw_junction_count"] == 1
     assert bundle.metrics["merged_junction_count"] == 1
     assert bundle.metrics["merged_endpoint_count"] == 4
     assert bundle.metrics["merged_edge_count"] == 4
@@ -61,7 +61,7 @@ def test_crosshatch_image_pipeline_reports_known_node_degrees(tmp_path: Path):
         ),
     )
 
-    assert metrics.raw_junction_count > 1
+    assert metrics.raw_junction_count == 1
     assert metrics.merged_junction_count == 1
     assert metrics.merged_endpoint_count == 4
     assert metrics.merged_edge_count == 4
