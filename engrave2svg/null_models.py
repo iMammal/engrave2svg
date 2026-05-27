@@ -27,15 +27,29 @@ class Stroke:
         return float(sum(math.dist(a, b) for a, b in zip(self.points, self.points[1:])))
 
 
-DEFAULT_METRICS = (
+NORMALIZED_METRICS = (
+    "endpoints_per_1000px",
+    "junctions_per_1000px",
+    "cycles_per_node",
+    "four_cycles_per_node",
+    "lozenge_candidates_per_cycle",
+    "degree3_fraction",
+    "degree4_fraction",
     "orientation_peak_concentration",
     "orientation_entropy",
+    "largest_connected_component_fraction",
+)
+
+DEFAULT_METRICS = (
+    *NORMALIZED_METRICS,
+    "open_lozenge_candidate_count",
+    "open_lozenge_mean_confidence",
+    "closed_lozenge_candidate_count",
     "dominant_orientation_families",
     "endpoint_count",
     "junction_count",
     "degree_3_fraction",
     "connected_component_count",
-    "largest_connected_component_fraction",
     "cycle_count",
     "four_cycle_count",
     "lozenge_candidate_count",
@@ -249,22 +263,29 @@ def analyze_graph(graph: nx.Graph) -> dict[str, object]:
     cycles = nx.cycle_basis(simple)
     four_cycles = enumerate_four_cycles(simple)
     lozenges = detect_lozenge_candidates(simple, four_cycles)
-    return {
+    open_lozenges = detect_open_lozenge_candidates(simple, closed_candidates=lozenges)
+    metrics = {
         "orientation_peak_concentration": float(max(hist) / sum(hist)) if sum(hist) else 0.0,
         "orientation_entropy": entropy,
         "dominant_orientation_families": len(peaks),
         "endpoint_count": sum(1 for degree in degrees.values() if degree == 1),
         "junction_count": sum(1 for degree in degrees.values() if degree >= 3),
+        "degree3_fraction": float(sum(1 for degree in degrees.values() if degree == 3) / node_count) if node_count else 0.0,
+        "degree4_fraction": float(sum(1 for degree in degrees.values() if degree == 4) / node_count) if node_count else 0.0,
         "degree_3_fraction": float(sum(1 for degree in degrees.values() if degree == 3) / node_count) if node_count else 0.0,
         "connected_component_count": len(components),
         "largest_connected_component_fraction": float(max(components, default=0) / node_count) if node_count else 0.0,
         "cycle_count": len(cycles),
         "four_cycle_count": len(four_cycles),
+        "closed_lozenge_candidate_count": len(lozenges),
         "lozenge_candidate_count": len(lozenges),
+        "open_lozenge_candidate_count": len(open_lozenges),
+        "open_lozenge_mean_confidence": _mean([float(item["confidence"]) for item in open_lozenges]),
         "total_traced_length": float(sum(edge_lengths)),
         "node_count": node_count,
         "edge_count": simple.number_of_edges(),
     }
+    return _with_normalized_metrics(metrics)
 
 
 def enumerate_four_cycles(graph: nx.Graph) -> list[tuple[str, str, str, str]]:
@@ -330,6 +351,126 @@ def detect_lozenge_candidates(
     return candidates
 
 
+def detect_open_lozenge_candidates(
+    graph: nx.Graph,
+    closed_candidates: Iterable[dict[str, object]] | None = None,
+    parallel_tolerance_deg: float = 18.0,
+    angle_tolerance_deg: float = 22.0,
+    extension_tolerance_px: float = 12.0,
+    side_tolerance: float = 0.45,
+    min_area: float = 4.0,
+    min_confidence: float = 0.45,
+    max_parallel_pairs: int = 400,
+) -> list[dict[str, object]]:
+    edges = _geometric_edges(graph)
+    if len(edges) < 4:
+        return []
+    closed_node_sets = _closed_lozenge_node_sets(closed_candidates)
+    parallel_pairs: list[tuple[dict[str, object], dict[str, object], float]] = []
+    for index, first in enumerate(edges):
+        for second in edges[index + 1 :]:
+            if set(first["nodes"]) & set(second["nodes"]):
+                continue
+            parallel_error = _axial_angle_diff(float(first["angle"]), float(second["angle"]))
+            if parallel_error > parallel_tolerance_deg:
+                continue
+            length_ratio = max(float(first["length"]), float(second["length"])) / max(
+                1e-9, min(float(first["length"]), float(second["length"]))
+            )
+            if length_ratio > 1.0 + side_tolerance:
+                continue
+            parallel_pairs.append((first, second, parallel_error))
+            if len(parallel_pairs) >= max_parallel_pairs:
+                break
+        if len(parallel_pairs) >= max_parallel_pairs:
+            break
+
+    candidates: list[dict[str, object]] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for pair_index, (a1, a2, error_a) in enumerate(parallel_pairs):
+        nodes_a = set(a1["nodes"]) | set(a2["nodes"])
+        for b1, b2, error_b in parallel_pairs[pair_index + 1 :]:
+            nodes = nodes_a | set(b1["nodes"]) | set(b2["nodes"])
+            if len(nodes) < 4:
+                continue
+            if any(nodes == closed for closed in closed_node_sets):
+                continue
+            family_angle = _axial_angle_diff(float(a1["angle"]), float(b1["angle"]))
+            if family_angle < angle_tolerance_deg or family_angle > 180.0 - angle_tolerance_deg:
+                continue
+            intersections: list[PointF] = []
+            support_hits = 0
+            for side_a in (a1, a2):
+                for side_b in (b1, b2):
+                    point = _line_intersection(
+                        side_a["points"][0],
+                        side_a["points"][1],
+                        side_b["points"][0],
+                        side_b["points"][1],
+                    )
+                    if point is None:
+                        break
+                    intersections.append(point)
+                    if (
+                        _point_segment_distance(point, side_a["points"][0], side_a["points"][1])
+                        <= extension_tolerance_px
+                        and _point_segment_distance(point, side_b["points"][0], side_b["points"][1])
+                        <= extension_tolerance_px
+                    ):
+                        support_hits += 1
+                else:
+                    continue
+                break
+            if len(intersections) != 4 or support_hits < 2:
+                continue
+            ordered_points = _order_points_around_centroid(intersections)
+            area = abs(_polygon_area(ordered_points))
+            if area < min_area:
+                continue
+            side_lengths = [
+                math.dist(ordered_points[i], ordered_points[(i + 1) % 4])
+                for i in range(4)
+            ]
+            if min(side_lengths) <= 0:
+                continue
+            side_ratio = max(side_lengths) / min(side_lengths)
+            if side_ratio > 1.0 + side_tolerance:
+                continue
+            key = tuple(sorted(tuple(sorted(edge["nodes"])) for edge in (a1, a2, b1, b2)))
+            if key in seen:
+                continue
+            seen.add(key)
+            parallel_score = max(0.0, 1.0 - ((error_a + error_b) / 2.0) / parallel_tolerance_deg)
+            support_score = support_hits / 4.0
+            balance_score = min(1.0, 1.0 / side_ratio)
+            angle_score = min(1.0, family_angle / 60.0, (180.0 - family_angle) / 60.0)
+            confidence = float(
+                0.35 * support_score
+                + 0.25 * parallel_score
+                + 0.25 * balance_score
+                + 0.15 * angle_score
+            )
+            if confidence < min_confidence:
+                continue
+            diagonals = [math.dist(ordered_points[0], ordered_points[2]), math.dist(ordered_points[1], ordered_points[3])]
+            candidates.append(
+                {
+                    "side_edges": ";".join("|".join(edge["nodes"]) for edge in (a1, a2, b1, b2)),
+                    "corner_points": ";".join(f"{x:.3f},{y:.3f}" for x, y in ordered_points),
+                    "side_lengths": ";".join(f"{value:.6g}" for value in side_lengths),
+                    "diagonal_lengths": ";".join(f"{value:.6g}" for value in diagonals),
+                    "area": float(area),
+                    "family_angle_deg": float(family_angle),
+                    "opposite_parallel_error_deg": float(max(error_a, error_b)),
+                    "side_length_ratio": float(side_ratio),
+                    "supporting_intersections": support_hits,
+                    "confidence": confidence,
+                }
+            )
+    candidates.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    return candidates
+
+
 def write_lozenge_outputs(
     graph_path: str | Path,
     output_dir: str | Path,
@@ -346,6 +487,7 @@ def write_lozenge_outputs(
         side_tolerance=side_tolerance,
         angle_tolerance_deg=angle_tolerance_deg,
     )
+    open_candidates = detect_open_lozenge_candidates(nx.Graph(graph), closed_candidates=candidates)
     csv_path = root / "lozenge_candidates.csv"
     fields = [
         "cycle_nodes",
@@ -361,10 +503,30 @@ def write_lozenge_outputs(
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(candidates)
+    open_csv_path = root / "open_lozenge_candidates.csv"
+    open_fields = [
+        "side_edges",
+        "corner_points",
+        "side_lengths",
+        "diagonal_lengths",
+        "area",
+        "family_angle_deg",
+        "opposite_parallel_error_deg",
+        "side_length_ratio",
+        "supporting_intersections",
+        "confidence",
+    ]
+    with open_csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=open_fields)
+        writer.writeheader()
+        writer.writerows(open_candidates)
     summary = {
         "graph": str(graph_path),
         "four_cycle_count": len(cycles),
+        "closed_lozenge_candidate_count": len(candidates),
         "lozenge_candidate_count": len(candidates),
+        "open_lozenge_candidate_count": len(open_candidates),
+        "open_lozenge_mean_confidence": _mean([float(item["confidence"]) for item in open_candidates]),
         "side_tolerance": side_tolerance,
         "angle_tolerance_deg": angle_tolerance_deg,
     }
@@ -404,6 +566,7 @@ def compare_null_models(
     invalid_controls = [item for item in controls if not item["valid"]]
     null_controls = [item for item in valid_controls if item["class"] == "random"]
     lozenge_controls = [item for item in valid_controls if item["class"] == "lozenge"]
+    class_aggregates = _class_aggregates(valid_controls)
 
     rows: list[dict[str, object]] = []
     for metric in DEFAULT_METRICS:
@@ -421,8 +584,12 @@ def compare_null_models(
                 "null_percentile": _percentile(observed_value, null_values),
                 "empirical_p_greater_equal": _empirical_p(observed_value, null_values, "greater"),
                 "empirical_p_less_equal": _empirical_p(observed_value, null_values, "less"),
+                "lozenge_control_n": len(lozenge_values),
                 "lozenge_control_mean": _mean(lozenge_values),
+                "lozenge_control_sd": _sd(lozenge_values),
+                "random_control_n": len(null_values),
                 "random_control_mean": _mean(null_values),
+                "random_control_sd": _sd(null_values),
                 "closer_to": _closer_to(observed_value, lozenge_values, null_values),
             }
         )
@@ -437,6 +604,7 @@ def compare_null_models(
         "observed": observed,
         "valid_controls": valid_controls,
         "invalid_controls": invalid_controls,
+        "class_aggregates": class_aggregates,
         "comparisons": rows,
         "interpretation_note": (
             "These summaries provide statistical support for or against mesh-like geometric "
@@ -446,7 +614,7 @@ def compare_null_models(
     json_path = root / "comparison_summary.json"
     json_path.write_text(json.dumps(payload, indent=2) + "\n")
     _write_invalid_controls(root / "invalid_controls.csv", invalid_controls)
-    _write_metric_plots(rows, root)
+    _write_metric_plots(rows, valid_controls, root)
     if observed_graph:
         write_lozenge_outputs(observed_graph, root)
     return csv_path, json_path
@@ -533,6 +701,7 @@ def generate_controls_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--height", type=int, default=180)
     parser.add_argument("--spacing", type=int, default=36)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed-count", type=int, default=1)
     parser.add_argument("--svg-previews", action="store_true")
     parser.add_argument("--stroke-width", type=int, default=3)
     parser.add_argument(
@@ -541,17 +710,44 @@ def generate_controls_main(argv: list[str] | None = None) -> int:
         default="bright-on-dark",
     )
     args = parser.parse_args(argv)
-    metadata = generate_control_set(
-        args.output_dir,
-        width=args.width,
-        height=args.height,
-        spacing=args.spacing,
-        seed=args.seed,
-        svg_previews=args.svg_previews,
-        stroke_width=args.stroke_width,
-        control_polarity=args.control_polarity,
-    )
-    print(f"Wrote {len(metadata['controls'])} controls to {args.output_dir}.")
+    if args.seed_count <= 1:
+        metadata = generate_control_set(
+            args.output_dir,
+            width=args.width,
+            height=args.height,
+            spacing=args.spacing,
+            seed=args.seed,
+            svg_previews=args.svg_previews,
+            stroke_width=args.stroke_width,
+            control_polarity=args.control_polarity,
+        )
+        print(f"Wrote {len(metadata['controls'])} controls to {args.output_dir}.")
+    else:
+        root = Path(args.output_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "seed_start": args.seed,
+            "seed_count": args.seed_count,
+            "controls": [],
+        }
+        for offset in range(args.seed_count):
+            seed = args.seed + offset
+            seed_dir = root / f"seed_{seed:04d}"
+            metadata = generate_control_set(
+                seed_dir,
+                width=args.width,
+                height=args.height,
+                spacing=args.spacing,
+                seed=seed,
+                svg_previews=args.svg_previews,
+                stroke_width=args.stroke_width,
+                control_polarity=args.control_polarity,
+            )
+            manifest["controls"].append(
+                {"seed": seed, "directory": str(seed_dir), "control_count": len(metadata["controls"])}
+            )
+        (root / "control_seed_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        print(f"Wrote {args.seed_count} seeded control sets to {args.output_dir}.")
     return 0
 
 
@@ -794,6 +990,7 @@ def _skip_json(path: Path) -> bool:
         "comparison_summary.json",
         "lozenge_summary.json",
         "expected_metadata.json",
+        "control_seed_manifest.json",
     }
 
 
@@ -803,26 +1000,69 @@ def _metrics_from_json(path: str | Path) -> dict[str, object]:
     merged = graph_metrics.get("merged", {})
     orientation = graph_metrics.get("orientation", {})
     values = {
-        "node_count": graph_metrics.get("merged_node_count", merged.get("node_count", 0)),
-        "edge_count": graph_metrics.get("merged_edge_count", merged.get("edge_count", 0)),
-        "endpoint_count": graph_metrics.get("merged_endpoint_count", merged.get("endpoints", 0)),
-        "junction_count": graph_metrics.get("merged_junction_count", merged.get("junctions", 0)),
-        "connected_component_count": graph_metrics.get("connected_components", merged.get("connected_components", 0)),
+        "node_count": graph_metrics.get("merged_node_count", graph_metrics.get("node_count", merged.get("node_count", 0))),
+        "edge_count": graph_metrics.get("merged_edge_count", graph_metrics.get("edge_count", merged.get("edge_count", 0))),
+        "endpoint_count": graph_metrics.get("merged_endpoint_count", graph_metrics.get("endpoint_count", merged.get("endpoints", 0))),
+        "junction_count": graph_metrics.get("merged_junction_count", graph_metrics.get("junction_count", merged.get("junctions", 0))),
+        "connected_component_count": graph_metrics.get(
+            "connected_components",
+            graph_metrics.get("connected_component_count", merged.get("connected_components", 0)),
+        ),
         "largest_connected_component_fraction": graph_metrics.get(
             "largest_connected_component_fraction",
             merged.get("largest_connected_component_fraction", 0),
         ),
-        "total_traced_length": graph_metrics.get("total_traced_length_px", merged.get("total_traced_length_px", 0)),
+        "total_traced_length": graph_metrics.get(
+            "total_traced_length",
+            graph_metrics.get("total_traced_length_px", merged.get("total_traced_length_px", 0)),
+        ),
         "cycle_count": graph_metrics.get("cycle_count", 0),
         "four_cycle_count": graph_metrics.get("four_cycle_count", 0),
+        "closed_lozenge_candidate_count": graph_metrics.get(
+            "closed_lozenge_candidate_count",
+            graph_metrics.get("lozenge_candidate_count", 0),
+        ),
         "lozenge_candidate_count": graph_metrics.get("lozenge_candidate_count", 0),
+        "open_lozenge_candidate_count": graph_metrics.get("open_lozenge_candidate_count", 0),
+        "open_lozenge_mean_confidence": graph_metrics.get("open_lozenge_mean_confidence", 0),
     }
+    for key in ("degree3_fraction", "degree4_fraction", "degree_3_fraction"):
+        if key in graph_metrics:
+            values[key] = graph_metrics[key]
+    degree_distribution = graph_metrics.get("degree_distribution", merged.get("degree_distribution", {}))
+    node_count = float(values.get("node_count", 0) or 0)
+    if isinstance(degree_distribution, dict) and node_count > 0:
+        values["degree3_fraction"] = float(degree_distribution.get("3", degree_distribution.get(3, 0))) / node_count
+        values["degree4_fraction"] = float(degree_distribution.get("4", degree_distribution.get(4, 0))) / node_count
     hist = orientation.get("length_weighted_histogram", [])
     if hist:
         values["orientation_peak_concentration"] = float(max(hist) / sum(hist)) if sum(hist) else 0.0
         values["orientation_entropy"] = _orientation_entropy([float(value) for value in hist])
         values["dominant_orientation_families"] = len(_dominant_orientation_peaks([float(value) for value in hist]))
-    return values
+    return _with_normalized_metrics(values)
+
+
+def _with_normalized_metrics(metrics: dict[str, object]) -> dict[str, object]:
+    total_length = float(metrics.get("total_traced_length", 0) or 0)
+    node_count = float(metrics.get("node_count", 0) or 0)
+    cycle_count = float(metrics.get("cycle_count", 0) or 0)
+    endpoint_count = float(metrics.get("endpoint_count", 0) or 0)
+    junction_count = float(metrics.get("junction_count", 0) or 0)
+    four_cycle_count = float(metrics.get("four_cycle_count", 0) or 0)
+    lozenge_count = float(metrics.get("lozenge_candidate_count", 0) or 0)
+    if "closed_lozenge_candidate_count" not in metrics:
+        metrics["closed_lozenge_candidate_count"] = lozenge_count
+    metrics["endpoints_per_1000px"] = endpoint_count / total_length * 1000.0 if total_length else 0.0
+    metrics["junctions_per_1000px"] = junction_count / total_length * 1000.0 if total_length else 0.0
+    metrics["cycles_per_node"] = cycle_count / node_count if node_count else 0.0
+    metrics["four_cycles_per_node"] = four_cycle_count / node_count if node_count else 0.0
+    metrics["lozenge_candidates_per_cycle"] = lozenge_count / cycle_count if cycle_count else 0.0
+    if "degree3_fraction" not in metrics:
+        metrics["degree3_fraction"] = float(metrics.get("degree_3_fraction", 0) or 0)
+    metrics["degree_3_fraction"] = float(metrics.get("degree3_fraction", metrics.get("degree_3_fraction", 0)) or 0)
+    if "degree4_fraction" not in metrics:
+        metrics["degree4_fraction"] = 0.0
+    return metrics
 
 
 def _write_invalid_controls(path: Path, invalid_controls: list[dict[str, object]]) -> None:
@@ -846,26 +1086,109 @@ def _write_invalid_controls(path: Path, invalid_controls: list[dict[str, object]
             )
 
 
-def _write_metric_plots(rows: list[dict[str, object]], output_dir: Path) -> None:
-    for metric in DEFAULT_METRICS[:6]:
+def _class_aggregates(controls: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    aggregates: dict[str, dict[str, object]] = {}
+    for control_class in sorted({str(control["class"]) for control in controls}):
+        class_controls = [control for control in controls if control["class"] == control_class]
+        metric_summaries: dict[str, dict[str, object]] = {}
+        for metric in DEFAULT_METRICS:
+            values = [
+                float(control["metrics"][metric])
+                for control in class_controls
+                if metric in control["metrics"]
+            ]
+            metric_summaries[metric] = {
+                "n": len(values),
+                "mean": _mean(values),
+                "sd": _sd(values),
+                "min": min(values) if values else 0.0,
+                "max": max(values) if values else 0.0,
+                "values": values,
+            }
+        aggregates[control_class] = {
+            "n_controls": len(class_controls),
+            "metrics": metric_summaries,
+        }
+    return aggregates
+
+
+def _write_metric_plots(
+    rows: list[dict[str, object]],
+    controls: list[dict[str, object]],
+    output_dir: Path,
+) -> None:
+    for metric in NORMALIZED_METRICS:
         row = next((item for item in rows if item["metric"] == metric), None)
         if not row:
             continue
-        image = np.full((220, 360, 3), 255, dtype=np.uint8)
-        labels = ["observed", "null", "lozenge"]
-        values = [
-            float(row["observed"]),
-            float(row["random_control_mean"]),
-            float(row["lozenge_control_mean"]),
+        image = np.full((260, 420, 3), 255, dtype=np.uint8)
+        random_values = [
+            float(control["metrics"][metric])
+            for control in controls
+            if control["class"] == "random" and metric in control["metrics"]
         ]
-        maximum = max(values) if max(values) > 0 else 1.0
-        for index, value in enumerate(values):
-            x0 = 45 + index * 100
-            h = int(140 * value / maximum)
-            cv2.rectangle(image, (x0, 170 - h), (x0 + 48, 170), (60, 110, 180), -1)
-            cv2.putText(image, labels[index], (x0 - 10, 195), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
+        lozenge_values = [
+            float(control["metrics"][metric])
+            for control in controls
+            if control["class"] == "lozenge" and metric in control["metrics"]
+        ]
+        observed = float(row["observed"])
+        values = random_values + lozenge_values + [observed]
+        minimum = min(values) if values else 0.0
+        maximum = max(values) if values else 1.0
+        if math.isclose(minimum, maximum):
+            minimum -= 0.5
+            maximum += 0.5
+        plot_top, plot_bottom = 45, 205
+        cv2.line(image, (55, plot_top), (55, plot_bottom), (40, 40, 40), 1)
+        cv2.line(image, (55, plot_bottom), (380, plot_bottom), (40, 40, 40), 1)
+        for x, label, class_values, color in (
+            (155, "random", random_values, (70, 130, 190)),
+            (275, "lozenge", lozenge_values, (70, 150, 90)),
+        ):
+            _draw_distribution(image, class_values, x, plot_top, plot_bottom, minimum, maximum, color)
+            cv2.putText(image, label, (x - 35, 232), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+        observed_y = _plot_y(observed, plot_top, plot_bottom, minimum, maximum)
+        cv2.line(image, (70, observed_y), (370, observed_y), (40, 40, 210), 1)
+        cv2.putText(image, "observed", (310, max(plot_top + 12, observed_y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (40, 40, 160), 1, cv2.LINE_AA)
         cv2.putText(image, metric[:36], (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
         cv2.imwrite(str(output_dir / f"{metric}.png"), image)
+
+
+def _draw_distribution(
+    image: np.ndarray,
+    values: list[float],
+    x: int,
+    plot_top: int,
+    plot_bottom: int,
+    minimum: float,
+    maximum: float,
+    color: tuple[int, int, int],
+) -> None:
+    if not values:
+        cv2.putText(image, "n=0", (x - 15, 128), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (100, 100, 100), 1, cv2.LINE_AA)
+        return
+    sorted_values = sorted(values)
+    q1 = _quantile(sorted_values, 0.25)
+    median = _quantile(sorted_values, 0.5)
+    q3 = _quantile(sorted_values, 0.75)
+    y_q1 = _plot_y(q1, plot_top, plot_bottom, minimum, maximum)
+    y_median = _plot_y(median, plot_top, plot_bottom, minimum, maximum)
+    y_q3 = _plot_y(q3, plot_top, plot_bottom, minimum, maximum)
+    y_min = _plot_y(min(sorted_values), plot_top, plot_bottom, minimum, maximum)
+    y_max = _plot_y(max(sorted_values), plot_top, plot_bottom, minimum, maximum)
+    cv2.line(image, (x, y_min), (x, y_max), color, 1)
+    cv2.rectangle(image, (x - 20, min(y_q1, y_q3)), (x + 20, max(y_q1, y_q3)), color, 1)
+    cv2.line(image, (x - 24, y_median), (x + 24, y_median), color, 2)
+    for index, value in enumerate(sorted_values):
+        jitter = ((index % 7) - 3) * 4
+        cv2.circle(image, (x + jitter, _plot_y(value, plot_top, plot_bottom, minimum, maximum)), 3, color, -1)
+    cv2.putText(image, f"n={len(values)}", (x - 18, 218), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (70, 70, 70), 1, cv2.LINE_AA)
+
+
+def _plot_y(value: float, plot_top: int, plot_bottom: int, minimum: float, maximum: float) -> int:
+    fraction = (value - minimum) / (maximum - minimum)
+    return int(round(plot_bottom - fraction * (plot_bottom - plot_top)))
 
 
 def _orientation_histogram(orientations: list[float], lengths: list[float], bins: int = 18) -> list[float]:
@@ -909,6 +1232,34 @@ def _edge_orientation(graph: nx.Graph, u: str, v: str, data: dict[str, object]) 
     if "orientation_deg" in data:
         return float(data["orientation_deg"]) % 180.0
     return _segment_angle(_node_xy(graph, u), _node_xy(graph, v))
+
+
+def _geometric_edges(graph: nx.Graph) -> list[dict[str, object]]:
+    edges: list[dict[str, object]] = []
+    for u, v, data in graph.edges(data=True):
+        a = _node_xy(graph, u)
+        b = _node_xy(graph, v)
+        length = _edge_length(graph, u, v, data)
+        if length <= 0:
+            continue
+        edges.append(
+            {
+                "nodes": (str(u), str(v)),
+                "points": (a, b),
+                "length": float(length),
+                "angle": _edge_orientation(graph, u, v, data),
+            }
+        )
+    return edges
+
+
+def _closed_lozenge_node_sets(candidates: Iterable[dict[str, object]] | None) -> list[set[str]]:
+    closed: list[set[str]] = []
+    for candidate in candidates or []:
+        nodes = str(candidate.get("cycle_nodes", ""))
+        if nodes:
+            closed.append(set(nodes.split(";")))
+    return closed
 
 
 def _node_xy(graph: nx.Graph, node: str) -> PointF:
@@ -978,6 +1329,18 @@ def _sd(values: list[float]) -> float:
     return float((sum((value - mean) ** 2 for value in values) / len(values)) ** 0.5)
 
 
+def _quantile(sorted_values: list[float], q: float) -> float:
+    if not sorted_values:
+        return 0.0
+    position = (len(sorted_values) - 1) * q
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return float(sorted_values[lower])
+    weight = position - lower
+    return float(sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight)
+
+
 def _percentile(value: float, distribution: list[float]) -> float:
     if not distribution:
         return 0.0
@@ -1028,14 +1391,35 @@ def _stroke_intersections(stroke: Stroke, strokes: list[Stroke], width: int, hei
 
 
 def _segment_intersection(a: PointF, b: PointF, c: PointF, d: PointF) -> PointF | None:
+    point = _line_intersection(a, b, c, d)
+    if point and _point_on_segment(point, a, b) and _point_on_segment(point, c, d):
+        return point
+    return None
+
+
+def _line_intersection(a: PointF, b: PointF, c: PointF, d: PointF) -> PointF | None:
     denominator = (a[0] - b[0]) * (c[1] - d[1]) - (a[1] - b[1]) * (c[0] - d[0])
     if abs(denominator) < 1e-9:
         return None
     px = ((a[0] * b[1] - a[1] * b[0]) * (c[0] - d[0]) - (a[0] - b[0]) * (c[0] * d[1] - c[1] * d[0])) / denominator
     py = ((a[0] * b[1] - a[1] * b[0]) * (c[1] - d[1]) - (a[1] - b[1]) * (c[0] * d[1] - c[1] * d[0])) / denominator
-    if _point_on_segment((px, py), a, b) and _point_on_segment((px, py), c, d):
-        return (px, py)
-    return None
+    return (px, py)
+
+
+def _point_segment_distance(point: PointF, a: PointF, b: PointF) -> float:
+    ab = (b[0] - a[0], b[1] - a[1])
+    length_sq = ab[0] * ab[0] + ab[1] * ab[1]
+    if length_sq <= 0:
+        return math.dist(point, a)
+    t = max(0.0, min(1.0, ((point[0] - a[0]) * ab[0] + (point[1] - a[1]) * ab[1]) / length_sq))
+    projection = (a[0] + t * ab[0], a[1] + t * ab[1])
+    return math.dist(point, projection)
+
+
+def _order_points_around_centroid(points: list[PointF]) -> list[PointF]:
+    cx = sum(point[0] for point in points) / len(points)
+    cy = sum(point[1] for point in points) / len(points)
+    return sorted(points, key=lambda point: math.atan2(point[1] - cy, point[0] - cx))
 
 
 def _point_on_segment(point: PointF, a: PointF, b: PointF, tolerance: float = 1.25) -> bool:

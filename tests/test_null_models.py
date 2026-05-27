@@ -7,11 +7,14 @@ from engrave2svg.null_models import (
     analyze_graph,
     analyze_graphml,
     compare_null_models,
+    detect_open_lozenge_candidates,
     generate_control_set,
+    generate_controls_main,
     graph_from_strokes,
     lozenge_grid_graph,
     random_scratch_strokes,
     save_graphml,
+    Stroke,
     write_lozenge_outputs,
 )
 from engrave2svg.pipeline import PipelineConfig, run_pipeline
@@ -30,8 +33,15 @@ def test_lozenge_lattice_yields_four_cycles_and_candidates(tmp_path: Path):
 
     assert metrics["four_cycle_count"] > 0
     assert metrics["lozenge_candidate_count"] > 0
+    assert metrics["closed_lozenge_candidate_count"] == metrics["lozenge_candidate_count"]
+    assert metrics["cycles_per_node"] > 0
+    assert metrics["four_cycles_per_node"] > 0
+    assert metrics["lozenge_candidates_per_cycle"] > 0
+    assert "degree4_fraction" in metrics
     assert len(rows) == metrics["lozenge_candidate_count"]
     assert summary["lozenge_candidate_count"] == metrics["lozenge_candidate_count"]
+    assert "open_lozenge_candidate_count" in summary
+    assert (tmp_path / "open_lozenge_candidates.csv").exists()
 
 
 def test_random_scratch_control_has_fewer_lozenge_candidates():
@@ -107,8 +117,56 @@ def test_compare_null_models_writes_csv_json_plots_and_lozenge_outputs(tmp_path:
     assert any(row["metric"] == "lozenge_candidate_count" for row in rows)
     assert payload["comparisons"]
     assert (output / "orientation_entropy.png").exists()
+    assert (output / "endpoints_per_1000px.png").exists()
     assert (output / "lozenge_candidates.csv").exists()
     assert (output / "lozenge_summary.json").exists()
+    assert "class_aggregates" in payload
+    assert payload["class_aggregates"]["lozenge"]["n_controls"] >= 1
+
+
+def test_open_lozenge_detector_reports_implied_candidates_separately():
+    graph = graph_from_strokes(
+        [
+            # Two positive-slope sides and two negative-slope sides that imply a rhombus,
+            # but stop just short of several corners so no closed 4-cycle is present.
+            Stroke([(12, 42), (42, 12)]),
+            Stroke([(58, 88), (88, 58)]),
+            Stroke([(12, 58), (42, 88)]),
+            Stroke([(58, 12), (88, 42)]),
+        ]
+    )
+    metrics = analyze_graph(graph)
+    open_candidates = detect_open_lozenge_candidates(graph)
+
+    assert metrics["lozenge_candidate_count"] == 0
+    assert metrics["open_lozenge_candidate_count"] > 0
+    assert open_candidates
+    assert 0.0 < open_candidates[0]["confidence"] <= 1.0
+
+
+def test_generate_controls_supports_many_seed_directories(tmp_path: Path):
+    rc = generate_controls_main(
+        [
+            "--output-dir",
+            str(tmp_path),
+            "--width",
+            "120",
+            "--height",
+            "90",
+            "--spacing",
+            "30",
+            "--seed",
+            "20",
+            "--seed-count",
+            "2",
+        ]
+    )
+
+    manifest = json.loads((tmp_path / "control_seed_manifest.json").read_text())
+    assert rc == 0
+    assert manifest["seed_count"] == 2
+    assert (tmp_path / "seed_0020" / "clean_lozenge_lattice.png").exists()
+    assert (tmp_path / "seed_0021" / "random_scratches.png").exists()
 
 
 def test_generate_controls_writes_png_metadata_and_svg_previews(tmp_path: Path):
@@ -213,6 +271,8 @@ def test_compare_groups_extracted_controls_once_and_reports_invalid(tmp_path: Pa
 
     assert classes.count("lozenge") == 1
     assert classes.count("random") == 1
+    assert payload["class_aggregates"]["lozenge"]["n_controls"] == 1
+    assert payload["class_aggregates"]["random"]["n_controls"] == 1
     assert payload["invalid_controls"]
     assert "node_count == 0" in payload["invalid_controls"][0]["invalid_reason"]
     assert float(by_metric["total_traced_length"]["lozenge_control_mean"]) > 0
