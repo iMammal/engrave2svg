@@ -145,11 +145,37 @@ python scripts/generate_controls.py \
   --width 240 \
   --height 180 \
   --spacing 36 \
+  --stroke-width 3 \
+  --control-polarity bright-on-dark \
   --seed 42 \
   --svg-previews
 ```
 
-This writes clean lozenge/rhombic lattice, broken/noisy lozenge lattice, random scratch, and curved random scratch PNG controls plus `expected_metadata.json`. Clean synthetic lozenge lattices are the positive controls because their geometry is known. SandDraw/iPad sand-texture images are not positive controls unless a preprocessing step first isolates actual groove centerlines; otherwise they test rendering texture, not extracted engraving topology.
+This writes clean lozenge/rhombic lattice, broken/noisy lozenge lattice, random scratch, and curved random scratch PNG controls plus `expected_metadata.json`. The default controls are bright strokes on a dark background, matching the threshold pipeline polarity; use `--control-polarity dark-on-bright` only for downstream tools that explicitly expect that polarity. Clean synthetic lozenge lattices are the positive controls because their geometry is known. SandDraw/iPad sand-texture images are not positive controls unless a preprocessing step first isolates actual groove centerlines; otherwise they test rendering texture, not extracted engraving topology.
+
+Vectorize the clean lozenge control with this recipe before using it as an extracted positive-control graph:
+
+```bash
+python engrave2svg.py controls/lozenge_nulls/clean_lozenge_lattice.png \
+  --output controls/vectorized/clean_lozenge/output.svg \
+  --metrics controls/vectorized/clean_lozenge/metrics.json \
+  --graph controls/vectorized/clean_lozenge/graph.graphml \
+  --nodes-csv controls/vectorized/clean_lozenge/nodes.csv \
+  --edges-csv controls/vectorized/clean_lozenge/edges.csv \
+  --debug controls/vectorized/clean_lozenge/debug \
+  --crop none \
+  --extraction-mode threshold \
+  --threshold-mode global \
+  --threshold-value 180 \
+  --morph-kernel-size 1 \
+  --min-component-size 1 \
+  --denoise-kernel-size 1 \
+  --clahe-clip-limit 1.0 \
+  --simplification-epsilon 0.0 \
+  --node-merge-radius 2.0
+```
+
+That recipe is intentionally plain threshold extraction. For the default generated clean lozenge control it should yield nonzero paths, graph nodes/edges, cycles, and lozenge candidates.
 
 Compare an observed extraction against a directory of null/control GraphML or metrics JSON files:
 
@@ -157,13 +183,13 @@ Compare an observed extraction against a directory of null/control GraphML or me
 python scripts/compare_null_models.py \
   --observed-graph output_merged.graphml \
   --observed-metrics output_metrics.json \
-  --controls-dir controls/extracted_control_metrics \
+  --controls-dir controls/vectorized \
   --output-dir null_comparison \
   --orientation-shuffles 100 \
   --seed 42
 ```
 
-The comparison writes `comparison_summary.csv`, `comparison_summary.json`, simple PNG plots for key metrics, `lozenge_candidates.csv`, and `lozenge_summary.json`. Metrics include dominant orientation peak concentration, orientation entropy, number of dominant orientation families, endpoint and junction counts, degree-3 fraction, connected components, largest connected component fraction, cycle count, 4-cycle count, conservative lozenge/rhombus candidate count, and total traced length.
+The comparison writes `comparison_summary.csv`, `comparison_summary.json`, `invalid_controls.csv`, simple PNG plots for key metrics, `lozenge_candidates.csv`, and `lozenge_summary.json`. Metrics include dominant orientation peak concentration, orientation entropy, number of dominant orientation families, endpoint and junction counts, degree-3 fraction, connected components, largest connected component fraction, cycle count, 4-cycle count, conservative lozenge/rhombus candidate count, and total traced length. When a control directory contains `metrics.json`, `graph_raw.graphml`, and `graph_merged.graphml`, the comparison uses the merged graph as one control sample and ignores raw graphs by default to avoid double-counting. Controls with `node_count == 0` or `total_traced_length == 0` are reported separately as invalid and excluded from class means.
 
 Lozenge candidates are deliberately conservative. The detector operates on graph topology and node coordinates, starts from simple 4-cycles, and checks side lengths, interior angles, diagonal lengths, aspect ratio, area, and approximate parallelism of opposite sides. A 4-cycle is not automatically called a lozenge. The output should be read as statistical support for or against mesh-like geometric structure relative to the supplied controls, not as evidence of intention.
 

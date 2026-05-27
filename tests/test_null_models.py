@@ -5,6 +5,7 @@ from pathlib import Path
 
 from engrave2svg.null_models import (
     analyze_graph,
+    analyze_graphml,
     compare_null_models,
     generate_control_set,
     graph_from_strokes,
@@ -13,6 +14,8 @@ from engrave2svg.null_models import (
     save_graphml,
     write_lozenge_outputs,
 )
+from engrave2svg.pipeline import PipelineConfig, run_pipeline
+from engrave2svg.preprocessing import PreprocessParams
 
 
 def test_lozenge_lattice_yields_four_cycles_and_candidates(tmp_path: Path):
@@ -125,3 +128,93 @@ def test_generate_controls_writes_png_metadata_and_svg_previews(tmp_path: Path):
         assert Path(control["image"]).exists()
         assert Path(control["svg"]).exists()
         assert control["stroke_count"] > 0
+        assert control["stroke_width"] == 3
+        assert control["control_polarity"] == "bright-on-dark"
+
+
+def test_clean_lozenge_control_vectorizes_to_nonzero_graph_and_lozenges(tmp_path: Path):
+    generate_control_set(
+        tmp_path,
+        width=160,
+        height=120,
+        spacing=32,
+        seed=4,
+        stroke_width=3,
+    )
+
+    metrics = run_pipeline(
+        input_path=tmp_path / "clean_lozenge_lattice.png",
+        output_path=tmp_path / "clean.svg",
+        debug_dir=tmp_path / "debug",
+        metrics_path=tmp_path / "metrics.json",
+        graph_path=tmp_path / "graph.graphml",
+        config=PipelineConfig(
+            preprocess=PreprocessParams(
+                crop="none",
+                threshold_mode="global",
+                threshold_value=180,
+                morph_kernel_size=1,
+                min_component_size=1,
+                denoise_kernel_size=1,
+                clahe_clip_limit=1.0,
+            ),
+            simplification_epsilon=0.0,
+            node_merge_radius=2.0,
+        ),
+    )
+    graph_metrics = analyze_graphml(tmp_path / "graph_merged.graphml")
+
+    assert metrics.paths > 0
+    assert graph_metrics["node_count"] > 0
+    assert graph_metrics["edge_count"] > 0
+    assert graph_metrics["cycle_count"] > 0
+    assert graph_metrics["lozenge_candidate_count"] > 0
+
+
+def test_compare_groups_extracted_controls_once_and_reports_invalid(tmp_path: Path):
+    controls = tmp_path / "controls"
+    lozenge_dir = controls / "clean_lozenge_lattice"
+    random_dir = controls / "random_scratches"
+    invalid_dir = controls / "empty_random_scratches"
+    lozenge_dir.mkdir(parents=True)
+    random_dir.mkdir()
+    invalid_dir.mkdir()
+
+    lozenge_graph = lozenge_grid_graph(width=180, height=140, spacing=35)
+    random_graph = graph_from_strokes(
+        random_scratch_strokes(
+            width=180,
+            height=140,
+            stroke_count=24,
+            target_total_length=1200,
+            rng=random.Random(12),
+        )
+    )
+    save_graphml(lozenge_graph, lozenge_dir / "graph_merged.graphml")
+    save_graphml(lozenge_graph, lozenge_dir / "graph_raw.graphml")
+    save_graphml(random_graph, random_dir / "graph_merged.graphml")
+    save_graphml(random_graph, random_dir / "graph_raw.graphml")
+    (lozenge_dir / "metrics.json").write_text(json.dumps({"graph_metrics": {"merged_node_count": 10}}))
+    (random_dir / "metrics.json").write_text(json.dumps({"graph_metrics": {"merged_node_count": 10}}))
+    (invalid_dir / "metrics.json").write_text(
+        json.dumps({"graph_metrics": {"merged_node_count": 0, "total_traced_length_px": 0}})
+    )
+
+    csv_path, json_path = compare_null_models(
+        observed_graph=lozenge_dir / "graph_merged.graphml",
+        observed_metrics=None,
+        controls_dir=controls,
+        output_dir=tmp_path / "comparison",
+    )
+    rows = list(csv.DictReader(csv_path.open()))
+    payload = json.loads(json_path.read_text())
+    by_metric = {row["metric"]: row for row in rows}
+    classes = [control["class"] for control in payload["valid_controls"]]
+
+    assert classes.count("lozenge") == 1
+    assert classes.count("random") == 1
+    assert payload["invalid_controls"]
+    assert "node_count == 0" in payload["invalid_controls"][0]["invalid_reason"]
+    assert float(by_metric["total_traced_length"]["lozenge_control_mean"]) > 0
+    assert float(by_metric["total_traced_length"]["random_control_mean"]) > 0
+    assert (tmp_path / "comparison" / "invalid_controls.csv").exists()
