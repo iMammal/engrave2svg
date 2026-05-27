@@ -133,6 +133,40 @@ sensitivity/trials/trial_0000/debug/*.png
 
 The `command.txt` files are independent single-image commands so the same trial layout can later be dispatched as SLURM array jobs. See `docs/hpc_delta_slurm.md` for a CPU-only NCSA Delta example. This branch does not add GPU or HPC acceleration.
 
+## Null Models And Positive Controls
+
+`engrave2svg` includes analysis utilities for asking whether an extracted graph has more mesh-like geometric structure than randomized scratch controls. These tools operate on canonical GraphML/CSV/JSON outputs; SVG remains a visual preview only.
+
+Generate synthetic controls:
+
+```bash
+python scripts/generate_controls.py \
+  --output-dir controls/lozenge_nulls \
+  --width 240 \
+  --height 180 \
+  --spacing 36 \
+  --seed 42 \
+  --svg-previews
+```
+
+This writes clean lozenge/rhombic lattice, broken/noisy lozenge lattice, random scratch, and curved random scratch PNG controls plus `expected_metadata.json`. Clean synthetic lozenge lattices are the positive controls because their geometry is known. SandDraw/iPad sand-texture images are not positive controls unless a preprocessing step first isolates actual groove centerlines; otherwise they test rendering texture, not extracted engraving topology.
+
+Compare an observed extraction against a directory of null/control GraphML or metrics JSON files:
+
+```bash
+python scripts/compare_null_models.py \
+  --observed-graph output_merged.graphml \
+  --observed-metrics output_metrics.json \
+  --controls-dir controls/extracted_control_metrics \
+  --output-dir null_comparison \
+  --orientation-shuffles 100 \
+  --seed 42
+```
+
+The comparison writes `comparison_summary.csv`, `comparison_summary.json`, simple PNG plots for key metrics, `lozenge_candidates.csv`, and `lozenge_summary.json`. Metrics include dominant orientation peak concentration, orientation entropy, number of dominant orientation families, endpoint and junction counts, degree-3 fraction, connected components, largest connected component fraction, cycle count, 4-cycle count, conservative lozenge/rhombus candidate count, and total traced length.
+
+Lozenge candidates are deliberately conservative. The detector operates on graph topology and node coordinates, starts from simple 4-cycles, and checks side lengths, interior angles, diagonal lengths, aspect ratio, area, and approximate parallelism of opposite sides. A 4-cycle is not automatically called a lozenge. The output should be read as statistical support for or against mesh-like geometric structure relative to the supplied controls, not as evidence of intention.
+
 ## Example
 
 ```bash
@@ -196,7 +230,7 @@ An example SVG is already included at `examples/synthetic_output.svg`.
 python -m pytest
 ```
 
-The tests use synthetic line drawings to check crop behavior, skeletonization, junction splitting, simplification, ridge extraction, graph metrics, node merging, orientation families, sensitivity summaries, and SVG export.
+The tests use synthetic line drawings and graph controls to check crop behavior, skeletonization, junction splitting, simplification, ridge extraction, graph metrics, node merging, orientation families, lozenge/null-model analysis, sensitivity summaries, and SVG export.
 
 ## Failure Modes
 
@@ -214,4 +248,4 @@ The tests use synthetic line drawings to check crop behavior, skeletonization, j
 
 The exported SVG uses one `<polyline>` per traced segment with stable IDs like `path-0000`. Coordinates are relative to the cropped panel, not the original full image. Keep the debug directory with the SVG when recording provenance; it captures the exact intermediate stages that led to the vector result.
 
-For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, extraction mode, ridge parameters, optional bridge parameters and bridge records, node degree histograms, connected component size histograms, largest connected component fraction, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity summaries rerun the same pipeline across small thresholding, morphology, simplification, component-size, node-merge, bridge-parameter, and extraction-mode settings so claims about engraved structure can be checked for parameter stability rather than inferred from one attractive vector drawing.
+For reviewer-facing computational archaeology work, prefer the graph outputs over the SVG. Nodes are explicit endpoints and junctions/intersections; edges are traced skeleton stroke segments with pixel coordinates, polyline geometry, length, and axial orientation. The metrics JSON reports raw and merged topology, extraction mode, ridge parameters, optional bridge parameters and bridge records, node degree histograms, connected component size histograms, largest connected component fraction, graph density where meaningful, average node degree, total traced length, circular orientation statistics, and dominant length-weighted orientation bins. Sensitivity and null-model summaries help test whether an observed extraction is stable and more consistent with mesh-like geometric structure than with randomized scratch patterns; they should not be used to overclaim intention.
