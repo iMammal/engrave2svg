@@ -44,6 +44,7 @@ def test_lozenge_lattice_yields_four_cycles_and_candidates(tmp_path: Path):
     assert summary["lozenge_candidate_count"] == metrics["lozenge_candidate_count"]
     assert "open_lozenge_candidate_count" in summary
     assert (tmp_path / "open_lozenge_candidates.csv").exists()
+    assert (tmp_path / "bisected_lozenge_candidates.csv").exists()
 
 
 def test_random_scratch_control_has_fewer_lozenge_candidates():
@@ -74,11 +75,42 @@ def test_triangle_mesh_yields_triangle_metrics():
     assert metrics["triangle_area_cv"] < 0.01
 
 
+def test_split_diamond_yields_one_bisected_lozenge_candidate(tmp_path: Path):
+    graph = _split_diamond_graph()
+    graph_path = tmp_path / "split_diamond.graphml"
+    save_graphml(graph, graph_path)
+
+    metrics = analyze_graph(graph)
+    _csv_path, summary_json = write_lozenge_outputs(graph_path, tmp_path)
+    rows = list(csv.DictReader((tmp_path / "bisected_lozenge_candidates.csv").open()))
+    summary = json.loads(summary_json.read_text())
+
+    assert metrics["triangle_count"] == 2
+    assert metrics["adjacent_triangle_pair_count"] == 1
+    assert metrics["bisected_lozenge_candidate_count"] == 1
+    assert metrics["bisected_lozenge_candidates_per_cycle"] > 0
+    assert metrics["bisected_lozenge_candidates_per_triangle_pair"] == 1
+    assert metrics["bisected_lozenge_mean_confidence"] > 0.8
+    assert len(rows) == 1
+    assert rows[0]["shared_edge"] == "left;right"
+    assert summary["bisected_lozenge_candidate_count"] == 1
+
+
+def test_irregular_adjacent_triangles_do_not_make_high_confidence_bisected_lozenge():
+    metrics = analyze_graph(_irregular_adjacent_triangles_graph())
+
+    assert metrics["triangle_count"] == 2
+    assert metrics["adjacent_triangle_pair_count"] == 1
+    assert metrics["bisected_lozenge_candidate_count"] == 0
+    assert metrics["bisected_lozenge_mean_confidence"] == 0
+
+
 def test_lozenge_lattice_has_fewer_triangles_than_triangle_mesh():
     triangle_mesh = analyze_graph(_triangle_mesh_graph())
     lozenge = analyze_graph(lozenge_grid_graph(width=180, height=140, spacing=35))
 
     assert lozenge["triangle_count"] < triangle_mesh["triangle_count"]
+    assert lozenge["bisected_lozenge_candidate_count"] == 0
 
 
 def test_random_scratches_have_lower_triangle_structure_than_triangle_mesh():
@@ -97,6 +129,14 @@ def test_random_scratches_have_lower_triangle_structure_than_triangle_mesh():
 
     assert scratches["triangle_count"] < triangle_mesh["triangle_count"]
     assert scratches["triangles_per_node"] < triangle_mesh["triangles_per_node"]
+
+
+def test_triangle_mesh_has_fewer_bisected_lozenges_than_matching_split_diamond():
+    split = analyze_graph(_split_diamond_graph())
+    triangle_mesh = analyze_graph(_nonmatching_triangle_mesh_graph())
+
+    assert triangle_mesh["triangle_count"] > 0
+    assert triangle_mesh["bisected_lozenge_candidate_count"] < split["bisected_lozenge_candidate_count"]
 
 
 def test_orientation_entropy_is_lower_for_clean_lattice_than_random_scratches():
@@ -154,10 +194,12 @@ def test_compare_null_models_writes_csv_json_plots_and_lozenge_outputs(tmp_path:
     assert rows
     assert any(row["metric"] == "lozenge_candidate_count" for row in rows)
     assert any(row["metric"] == "triangle_count" for row in rows)
+    assert any(row["metric"] == "bisected_lozenge_candidate_count" for row in rows)
     assert payload["comparisons"]
     assert (output / "orientation_entropy.png").exists()
     assert (output / "triangles_per_node.png").exists()
     assert (output / "triangle_count.png").exists()
+    assert (output / "bisected_lozenge_candidate_count.png").exists()
     assert (output / "endpoints_per_1000px.png").exists()
     assert (output / "lozenge_candidates.csv").exists()
     assert (output / "lozenge_summary.json").exists()
@@ -330,6 +372,57 @@ def _triangle_mesh_graph() -> nx.Graph:
         "d": (60.0, height),
     }
     graph = nx.Graph()
+    for node, (x, y) in points.items():
+        graph.add_node(node, x_px=x, y_px=y)
+    for source, target in (("a", "b"), ("a", "c"), ("b", "c"), ("b", "d"), ("c", "d")):
+        graph.add_edge(source, target)
+    return graph
+
+
+def _split_diamond_graph() -> nx.Graph:
+    graph = nx.Graph()
+    points = {
+        "top": (40.0, 0.0),
+        "right": (80.0, 40.0),
+        "bottom": (40.0, 80.0),
+        "left": (0.0, 40.0),
+    }
+    for node, (x, y) in points.items():
+        graph.add_node(node, x_px=x, y_px=y)
+    for source, target in (
+        ("top", "right"),
+        ("right", "bottom"),
+        ("bottom", "left"),
+        ("left", "top"),
+        ("left", "right"),
+    ):
+        graph.add_edge(source, target)
+    return graph
+
+
+def _irregular_adjacent_triangles_graph() -> nx.Graph:
+    graph = nx.Graph()
+    points = {
+        "a": (0.0, 0.0),
+        "b": (80.0, 0.0),
+        "c": (10.0, 20.0),
+        "d": (150.0, 70.0),
+    }
+    for node, (x, y) in points.items():
+        graph.add_node(node, x_px=x, y_px=y)
+    for source, target in (("a", "b"), ("a", "c"), ("b", "c"), ("a", "d"), ("b", "d")):
+        graph.add_edge(source, target)
+    return graph
+
+
+def _nonmatching_triangle_mesh_graph() -> nx.Graph:
+    graph = nx.Graph()
+    points = {
+        "a": (0.0, 0.0),
+        "b": (50.0, 0.0),
+        "c": (20.0, 35.0),
+        "d": (45.0, 90.0),
+    }
     for node, (x, y) in points.items():
         graph.add_node(node, x_px=x, y_px=y)
     for source, target in (("a", "b"), ("a", "c"), ("b", "c"), ("b", "d"), ("c", "d")):

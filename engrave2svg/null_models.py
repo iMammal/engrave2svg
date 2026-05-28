@@ -33,6 +33,8 @@ NORMALIZED_METRICS = (
     "cycles_per_node",
     "triangles_per_node",
     "triangles_per_cycle",
+    "bisected_lozenge_candidates_per_cycle",
+    "bisected_lozenge_candidates_per_triangle_pair",
     "four_cycles_per_node",
     "lozenge_candidates_per_cycle",
     "degree3_fraction",
@@ -51,6 +53,9 @@ DEFAULT_METRICS = (
     "triangle_side_length_cv_mean",
     "triangle_area_mean",
     "triangle_area_cv",
+    "adjacent_triangle_pair_count",
+    "bisected_lozenge_candidate_count",
+    "bisected_lozenge_mean_confidence",
     "dominant_orientation_families",
     "endpoint_count",
     "junction_count",
@@ -68,6 +73,8 @@ PLOT_METRICS = (
     "triangle_side_length_cv_mean",
     "triangle_area_mean",
     "triangle_area_cv",
+    "bisected_lozenge_candidate_count",
+    "bisected_lozenge_mean_confidence",
 )
 
 
@@ -277,6 +284,7 @@ def analyze_graph(graph: nx.Graph) -> dict[str, object]:
     cycles = nx.cycle_basis(simple)
     triangles = enumerate_triangles(simple)
     triangle_shape = triangle_shape_metrics(simple, triangles)
+    bisected_lozenges = detect_bisected_lozenge_candidates(simple, triangles)
     four_cycles = enumerate_four_cycles(simple)
     lozenges = detect_lozenge_candidates(simple, four_cycles)
     open_lozenges = detect_open_lozenge_candidates(simple, closed_candidates=lozenges)
@@ -294,6 +302,11 @@ def analyze_graph(graph: nx.Graph) -> dict[str, object]:
         "cycle_count": len(cycles),
         "triangle_count": len(triangles),
         **triangle_shape,
+        "adjacent_triangle_pair_count": adjacent_triangle_pair_count(triangles),
+        "bisected_lozenge_candidate_count": len(bisected_lozenges),
+        "bisected_lozenge_mean_confidence": _mean(
+            [float(item["confidence"]) for item in bisected_lozenges]
+        ),
         "four_cycle_count": len(four_cycles),
         "closed_lozenge_candidate_count": len(lozenges),
         "lozenge_candidate_count": len(lozenges),
@@ -340,6 +353,88 @@ def triangle_shape_metrics(
         "triangle_area_mean": area_mean,
         "triangle_area_cv": _sd(areas) / area_mean if area_mean else 0.0,
     }
+
+
+def adjacent_triangle_pair_count(triangles: Iterable[tuple[str, str, str]]) -> int:
+    return len(_adjacent_triangle_pairs(list(triangles)))
+
+
+def detect_bisected_lozenge_candidates(
+    graph: nx.Graph,
+    triangles: Iterable[tuple[str, str, str]] | None = None,
+    side_tolerance: float = 0.35,
+    angle_tolerance_deg: float = 18.0,
+    diagonal_tolerance: float = 0.75,
+    min_area: float = 4.0,
+    min_confidence: float = 0.55,
+) -> list[dict[str, object]]:
+    candidates: list[dict[str, object]] = []
+    for first, second, shared in _adjacent_triangle_pairs(
+        list(triangles) if triangles is not None else enumerate_triangles(graph)
+    ):
+        union_nodes = set(first) | set(second)
+        if len(union_nodes) != 4:
+            continue
+        outer = [node for node in union_nodes if node not in shared]
+        if len(outer) != 2:
+            continue
+        ordered = _order_nodes_around_centroid(graph, list(union_nodes))
+        points = [_node_xy(graph, node) for node in ordered]
+        area = abs(_polygon_area(points))
+        if area < min_area:
+            continue
+        sides = [math.dist(points[i], points[(i + 1) % 4]) for i in range(4)]
+        if min(sides) <= 0:
+            continue
+        side_ratio = max(sides) / min(sides)
+        if side_ratio > 1.0 + side_tolerance:
+            continue
+        angles = [_interior_angle(points[i - 1], points[i], points[(i + 1) % 4]) for i in range(4)]
+        parallel_a = _axial_angle_diff(_segment_angle(points[0], points[1]), _segment_angle(points[2], points[3]))
+        parallel_b = _axial_angle_diff(_segment_angle(points[1], points[2]), _segment_angle(points[3], points[0]))
+        if parallel_a > angle_tolerance_deg or parallel_b > angle_tolerance_deg:
+            continue
+        opposite_angle_error = max(
+            abs(angles[0] - angles[2]),
+            abs(angles[1] - angles[3]),
+        )
+        if opposite_angle_error > angle_tolerance_deg:
+            continue
+        diagonals = [math.dist(points[0], points[2]), math.dist(points[1], points[3])]
+        diagonal_ratio = max(diagonals) / min(diagonals) if min(diagonals) else float("inf")
+        if diagonal_ratio > 1.0 + diagonal_tolerance:
+            continue
+        parallel_score = max(0.0, 1.0 - max(parallel_a, parallel_b) / angle_tolerance_deg)
+        angle_score = max(0.0, 1.0 - opposite_angle_error / angle_tolerance_deg)
+        side_score = min(1.0, 1.0 / side_ratio)
+        diagonal_score = min(1.0, 1.0 / diagonal_ratio) if math.isfinite(diagonal_ratio) else 0.0
+        confidence = float(
+            0.35 * parallel_score
+            + 0.25 * angle_score
+            + 0.25 * side_score
+            + 0.15 * diagonal_score
+        )
+        if confidence < min_confidence:
+            continue
+        candidates.append(
+            {
+                "triangle_a": ";".join(first),
+                "triangle_b": ";".join(second),
+                "shared_edge": ";".join(sorted(shared)),
+                "outer_boundary_nodes": ";".join(ordered),
+                "area": float(area),
+                "side_lengths": ";".join(f"{value:.6g}" for value in sides),
+                "interior_angles_deg": ";".join(f"{value:.6g}" for value in angles),
+                "diagonal_lengths": ";".join(f"{value:.6g}" for value in diagonals),
+                "opposite_parallel_error_deg": float(max(parallel_a, parallel_b)),
+                "opposite_angle_error_deg": float(opposite_angle_error),
+                "side_length_ratio": float(side_ratio),
+                "diagonal_length_ratio": float(diagonal_ratio),
+                "confidence": confidence,
+            }
+        )
+    candidates.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    return candidates
 
 
 def enumerate_four_cycles(graph: nx.Graph) -> list[tuple[str, str, str, str]]:
@@ -535,6 +630,7 @@ def write_lozenge_outputs(
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     cycles = enumerate_four_cycles(nx.Graph(graph))
+    triangles = enumerate_triangles(nx.Graph(graph))
     candidates = detect_lozenge_candidates(
         nx.Graph(graph),
         cycles,
@@ -542,6 +638,12 @@ def write_lozenge_outputs(
         angle_tolerance_deg=angle_tolerance_deg,
     )
     open_candidates = detect_open_lozenge_candidates(nx.Graph(graph), closed_candidates=candidates)
+    bisected_candidates = detect_bisected_lozenge_candidates(
+        nx.Graph(graph),
+        triangles,
+        side_tolerance=side_tolerance,
+        angle_tolerance_deg=angle_tolerance_deg,
+    )
     csv_path = root / "lozenge_candidates.csv"
     fields = [
         "cycle_nodes",
@@ -574,8 +676,34 @@ def write_lozenge_outputs(
         writer = csv.DictWriter(handle, fieldnames=open_fields)
         writer.writeheader()
         writer.writerows(open_candidates)
+    bisected_csv_path = root / "bisected_lozenge_candidates.csv"
+    bisected_fields = [
+        "triangle_a",
+        "triangle_b",
+        "shared_edge",
+        "outer_boundary_nodes",
+        "area",
+        "side_lengths",
+        "interior_angles_deg",
+        "diagonal_lengths",
+        "opposite_parallel_error_deg",
+        "opposite_angle_error_deg",
+        "side_length_ratio",
+        "diagonal_length_ratio",
+        "confidence",
+    ]
+    with bisected_csv_path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=bisected_fields)
+        writer.writeheader()
+        writer.writerows(bisected_candidates)
     summary = {
         "graph": str(graph_path),
+        "triangle_count": len(triangles),
+        "adjacent_triangle_pair_count": adjacent_triangle_pair_count(triangles),
+        "bisected_lozenge_candidate_count": len(bisected_candidates),
+        "bisected_lozenge_mean_confidence": _mean(
+            [float(item["confidence"]) for item in bisected_candidates]
+        ),
         "four_cycle_count": len(cycles),
         "closed_lozenge_candidate_count": len(candidates),
         "lozenge_candidate_count": len(candidates),
@@ -1075,6 +1203,9 @@ def _metrics_from_json(path: str | Path) -> dict[str, object]:
         "triangle_side_length_cv_mean": graph_metrics.get("triangle_side_length_cv_mean", 0),
         "triangle_area_mean": graph_metrics.get("triangle_area_mean", 0),
         "triangle_area_cv": graph_metrics.get("triangle_area_cv", 0),
+        "adjacent_triangle_pair_count": graph_metrics.get("adjacent_triangle_pair_count", 0),
+        "bisected_lozenge_candidate_count": graph_metrics.get("bisected_lozenge_candidate_count", 0),
+        "bisected_lozenge_mean_confidence": graph_metrics.get("bisected_lozenge_mean_confidence", 0),
         "four_cycle_count": graph_metrics.get("four_cycle_count", 0),
         "closed_lozenge_candidate_count": graph_metrics.get(
             "closed_lozenge_candidate_count",
@@ -1107,6 +1238,8 @@ def _with_normalized_metrics(metrics: dict[str, object]) -> dict[str, object]:
     endpoint_count = float(metrics.get("endpoint_count", 0) or 0)
     junction_count = float(metrics.get("junction_count", 0) or 0)
     triangle_count = float(metrics.get("triangle_count", 0) or 0)
+    adjacent_triangle_pair_count_value = float(metrics.get("adjacent_triangle_pair_count", 0) or 0)
+    bisected_lozenge_count = float(metrics.get("bisected_lozenge_candidate_count", 0) or 0)
     four_cycle_count = float(metrics.get("four_cycle_count", 0) or 0)
     lozenge_count = float(metrics.get("lozenge_candidate_count", 0) or 0)
     if "closed_lozenge_candidate_count" not in metrics:
@@ -1116,6 +1249,14 @@ def _with_normalized_metrics(metrics: dict[str, object]) -> dict[str, object]:
     metrics["cycles_per_node"] = cycle_count / node_count if node_count else 0.0
     metrics["triangles_per_node"] = triangle_count / node_count if node_count else 0.0
     metrics["triangles_per_cycle"] = triangle_count / cycle_count if cycle_count else 0.0
+    metrics["bisected_lozenge_candidates_per_cycle"] = (
+        bisected_lozenge_count / cycle_count if cycle_count else 0.0
+    )
+    metrics["bisected_lozenge_candidates_per_triangle_pair"] = (
+        bisected_lozenge_count / adjacent_triangle_pair_count_value
+        if adjacent_triangle_pair_count_value
+        else 0.0
+    )
     metrics["four_cycles_per_node"] = four_cycle_count / node_count if node_count else 0.0
     metrics["lozenge_candidates_per_cycle"] = lozenge_count / cycle_count if cycle_count else 0.0
     if "degree3_fraction" not in metrics:
@@ -1321,6 +1462,27 @@ def _closed_lozenge_node_sets(candidates: Iterable[dict[str, object]] | None) ->
         if nodes:
             closed.append(set(nodes.split(";")))
     return closed
+
+
+def _adjacent_triangle_pairs(
+    triangles: list[tuple[str, str, str]]
+) -> list[tuple[tuple[str, str, str], tuple[str, str, str], set[str]]]:
+    pairs: list[tuple[tuple[str, str, str], tuple[str, str, str], set[str]]] = []
+    ordered = [tuple(sorted(triangle)) for triangle in triangles]
+    for index, first in enumerate(ordered):
+        first_nodes = set(first)
+        for second in ordered[index + 1 :]:
+            shared = first_nodes & set(second)
+            if len(shared) == 2:
+                pairs.append((first, second, shared))
+    return pairs
+
+
+def _order_nodes_around_centroid(graph: nx.Graph, nodes: list[str]) -> list[str]:
+    points = {node: _node_xy(graph, node) for node in nodes}
+    cx = sum(point[0] for point in points.values()) / len(points)
+    cy = sum(point[1] for point in points.values()) / len(points)
+    return sorted(nodes, key=lambda node: math.atan2(points[node][1] - cy, points[node][0] - cx))
 
 
 def _node_xy(graph: nx.Graph, node: str) -> PointF:
