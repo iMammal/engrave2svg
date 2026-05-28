@@ -31,6 +31,8 @@ NORMALIZED_METRICS = (
     "endpoints_per_1000px",
     "junctions_per_1000px",
     "cycles_per_node",
+    "triangles_per_node",
+    "triangles_per_cycle",
     "four_cycles_per_node",
     "lozenge_candidates_per_cycle",
     "degree3_fraction",
@@ -45,6 +47,10 @@ DEFAULT_METRICS = (
     "open_lozenge_candidate_count",
     "open_lozenge_mean_confidence",
     "closed_lozenge_candidate_count",
+    "triangle_count",
+    "triangle_side_length_cv_mean",
+    "triangle_area_mean",
+    "triangle_area_cv",
     "dominant_orientation_families",
     "endpoint_count",
     "junction_count",
@@ -54,6 +60,14 @@ DEFAULT_METRICS = (
     "four_cycle_count",
     "lozenge_candidate_count",
     "total_traced_length",
+)
+
+PLOT_METRICS = (
+    *NORMALIZED_METRICS,
+    "triangle_count",
+    "triangle_side_length_cv_mean",
+    "triangle_area_mean",
+    "triangle_area_cv",
 )
 
 
@@ -261,6 +275,8 @@ def analyze_graph(graph: nx.Graph) -> dict[str, object]:
     degrees = dict(simple.degree())
     components = [len(component) for component in nx.connected_components(simple)] if node_count else []
     cycles = nx.cycle_basis(simple)
+    triangles = enumerate_triangles(simple)
+    triangle_shape = triangle_shape_metrics(simple, triangles)
     four_cycles = enumerate_four_cycles(simple)
     lozenges = detect_lozenge_candidates(simple, four_cycles)
     open_lozenges = detect_open_lozenge_candidates(simple, closed_candidates=lozenges)
@@ -276,6 +292,8 @@ def analyze_graph(graph: nx.Graph) -> dict[str, object]:
         "connected_component_count": len(components),
         "largest_connected_component_fraction": float(max(components, default=0) / node_count) if node_count else 0.0,
         "cycle_count": len(cycles),
+        "triangle_count": len(triangles),
+        **triangle_shape,
         "four_cycle_count": len(four_cycles),
         "closed_lozenge_candidate_count": len(lozenges),
         "lozenge_candidate_count": len(lozenges),
@@ -286,6 +304,42 @@ def analyze_graph(graph: nx.Graph) -> dict[str, object]:
         "edge_count": simple.number_of_edges(),
     }
     return _with_normalized_metrics(metrics)
+
+
+def enumerate_triangles(graph: nx.Graph) -> list[tuple[str, str, str]]:
+    triangles: set[tuple[str, str, str]] = set()
+    nodes = sorted(str(node) for node in graph.nodes)
+    order = {node: index for index, node in enumerate(nodes)}
+    neighbors = {node: {str(item) for item in graph.neighbors(node)} for node in nodes}
+    for a in nodes:
+        for b in sorted(node for node in neighbors[a] if order[node] > order[a]):
+            for c in sorted(neighbors[a] & neighbors[b]):
+                if order[c] > order[b]:
+                    triangles.add((a, b, c))
+    return sorted(triangles)
+
+
+def triangle_shape_metrics(
+    graph: nx.Graph, triangles: Iterable[tuple[str, str, str]]
+) -> dict[str, object]:
+    side_cvs: list[float] = []
+    areas: list[float] = []
+    for triangle in triangles:
+        points = [_node_xy(graph, node) for node in triangle]
+        sides = [
+            math.dist(points[0], points[1]),
+            math.dist(points[1], points[2]),
+            math.dist(points[2], points[0]),
+        ]
+        mean_side = _mean(sides)
+        side_cvs.append(_sd(sides) / mean_side if mean_side else 0.0)
+        areas.append(abs(_polygon_area(points)))
+    area_mean = _mean(areas)
+    return {
+        "triangle_side_length_cv_mean": _mean(side_cvs),
+        "triangle_area_mean": area_mean,
+        "triangle_area_cv": _sd(areas) / area_mean if area_mean else 0.0,
+    }
 
 
 def enumerate_four_cycles(graph: nx.Graph) -> list[tuple[str, str, str, str]]:
@@ -1017,6 +1071,10 @@ def _metrics_from_json(path: str | Path) -> dict[str, object]:
             graph_metrics.get("total_traced_length_px", merged.get("total_traced_length_px", 0)),
         ),
         "cycle_count": graph_metrics.get("cycle_count", 0),
+        "triangle_count": graph_metrics.get("triangle_count", 0),
+        "triangle_side_length_cv_mean": graph_metrics.get("triangle_side_length_cv_mean", 0),
+        "triangle_area_mean": graph_metrics.get("triangle_area_mean", 0),
+        "triangle_area_cv": graph_metrics.get("triangle_area_cv", 0),
         "four_cycle_count": graph_metrics.get("four_cycle_count", 0),
         "closed_lozenge_candidate_count": graph_metrics.get(
             "closed_lozenge_candidate_count",
@@ -1048,6 +1106,7 @@ def _with_normalized_metrics(metrics: dict[str, object]) -> dict[str, object]:
     cycle_count = float(metrics.get("cycle_count", 0) or 0)
     endpoint_count = float(metrics.get("endpoint_count", 0) or 0)
     junction_count = float(metrics.get("junction_count", 0) or 0)
+    triangle_count = float(metrics.get("triangle_count", 0) or 0)
     four_cycle_count = float(metrics.get("four_cycle_count", 0) or 0)
     lozenge_count = float(metrics.get("lozenge_candidate_count", 0) or 0)
     if "closed_lozenge_candidate_count" not in metrics:
@@ -1055,6 +1114,8 @@ def _with_normalized_metrics(metrics: dict[str, object]) -> dict[str, object]:
     metrics["endpoints_per_1000px"] = endpoint_count / total_length * 1000.0 if total_length else 0.0
     metrics["junctions_per_1000px"] = junction_count / total_length * 1000.0 if total_length else 0.0
     metrics["cycles_per_node"] = cycle_count / node_count if node_count else 0.0
+    metrics["triangles_per_node"] = triangle_count / node_count if node_count else 0.0
+    metrics["triangles_per_cycle"] = triangle_count / cycle_count if cycle_count else 0.0
     metrics["four_cycles_per_node"] = four_cycle_count / node_count if node_count else 0.0
     metrics["lozenge_candidates_per_cycle"] = lozenge_count / cycle_count if cycle_count else 0.0
     if "degree3_fraction" not in metrics:
@@ -1117,7 +1178,7 @@ def _write_metric_plots(
     controls: list[dict[str, object]],
     output_dir: Path,
 ) -> None:
-    for metric in NORMALIZED_METRICS:
+    for metric in PLOT_METRICS:
         row = next((item for item in rows if item["metric"] == metric), None)
         if not row:
             continue

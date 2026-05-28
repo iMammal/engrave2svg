@@ -3,6 +3,8 @@ import json
 import random
 from pathlib import Path
 
+import networkx as nx
+
 from engrave2svg.null_models import (
     analyze_graph,
     analyze_graphml,
@@ -61,6 +63,42 @@ def test_random_scratch_control_has_fewer_lozenge_candidates():
     assert scratch_metrics["four_cycle_count"] <= lozenge["four_cycle_count"]
 
 
+def test_triangle_mesh_yields_triangle_metrics():
+    metrics = analyze_graph(_triangle_mesh_graph())
+
+    assert metrics["triangle_count"] >= 2
+    assert metrics["triangles_per_node"] > 0
+    assert metrics["triangles_per_cycle"] > 0
+    assert metrics["triangle_side_length_cv_mean"] < 0.01
+    assert metrics["triangle_area_mean"] > 0
+    assert metrics["triangle_area_cv"] < 0.01
+
+
+def test_lozenge_lattice_has_fewer_triangles_than_triangle_mesh():
+    triangle_mesh = analyze_graph(_triangle_mesh_graph())
+    lozenge = analyze_graph(lozenge_grid_graph(width=180, height=140, spacing=35))
+
+    assert lozenge["triangle_count"] < triangle_mesh["triangle_count"]
+
+
+def test_random_scratches_have_lower_triangle_structure_than_triangle_mesh():
+    triangle_mesh = analyze_graph(_triangle_mesh_graph())
+    scratches = analyze_graph(
+        graph_from_strokes(
+            random_scratch_strokes(
+                width=180,
+                height=140,
+                stroke_count=24,
+                target_total_length=1200,
+                rng=random.Random(17),
+            )
+        )
+    )
+
+    assert scratches["triangle_count"] < triangle_mesh["triangle_count"]
+    assert scratches["triangles_per_node"] < triangle_mesh["triangles_per_node"]
+
+
 def test_orientation_entropy_is_lower_for_clean_lattice_than_random_scratches():
     lozenge = analyze_graph(lozenge_grid_graph(width=180, height=140, spacing=35))
     scratches = graph_from_strokes(
@@ -115,8 +153,11 @@ def test_compare_null_models_writes_csv_json_plots_and_lozenge_outputs(tmp_path:
     assert json_path.exists()
     assert rows
     assert any(row["metric"] == "lozenge_candidate_count" for row in rows)
+    assert any(row["metric"] == "triangle_count" for row in rows)
     assert payload["comparisons"]
     assert (output / "orientation_entropy.png").exists()
+    assert (output / "triangles_per_node.png").exists()
+    assert (output / "triangle_count.png").exists()
     assert (output / "endpoints_per_1000px.png").exists()
     assert (output / "lozenge_candidates.csv").exists()
     assert (output / "lozenge_summary.json").exists()
@@ -278,3 +319,19 @@ def test_compare_groups_extracted_controls_once_and_reports_invalid(tmp_path: Pa
     assert float(by_metric["total_traced_length"]["lozenge_control_mean"]) > 0
     assert float(by_metric["total_traced_length"]["random_control_mean"]) > 0
     assert (tmp_path / "comparison" / "invalid_controls.csv").exists()
+
+
+def _triangle_mesh_graph() -> nx.Graph:
+    height = 40.0 * (3.0**0.5) / 2.0
+    points = {
+        "a": (0.0, 0.0),
+        "b": (40.0, 0.0),
+        "c": (20.0, height),
+        "d": (60.0, height),
+    }
+    graph = nx.Graph()
+    for node, (x, y) in points.items():
+        graph.add_node(node, x_px=x, y_px=y)
+    for source, target in (("a", "b"), ("a", "c"), ("b", "c"), ("b", "d"), ("c", "d")):
+        graph.add_edge(source, target)
+    return graph
