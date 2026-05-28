@@ -87,6 +87,9 @@ def generate_control_set(
     svg_previews: bool = False,
     stroke_width: int = 3,
     control_polarity: str = "bright-on-dark",
+    include_bisected_lozenge_controls: bool = False,
+    bisect_fraction: float = 0.5,
+    bisect_mode: str = "mixed",
 ) -> dict[str, object]:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -117,6 +120,32 @@ def generate_control_set(
         stroke_width,
         control_polarity,
     )
+
+    controls = [clean_meta, broken_meta]
+
+    if include_bisected_lozenge_controls:
+        bisected = bisected_lozenge_lattice_strokes(
+            width=width,
+            height=height,
+            spacing=spacing,
+            fraction=bisect_fraction,
+            mode=bisect_mode,
+            rng=rng,
+        )
+        controls.append(
+            _write_control(
+                root,
+                "bisected_lozenge_lattice",
+                "bisected_lozenge",
+                bisected,
+                width,
+                height,
+                svg_previews,
+                stroke_width,
+                control_polarity,
+                motif="split_lozenge",
+            )
+        )
 
     scratches = random_scratch_strokes(
         width=width,
@@ -163,6 +192,9 @@ def generate_control_set(
         "spacing": spacing,
         "stroke_width": stroke_width,
         "control_polarity": control_polarity,
+        "include_bisected_lozenge_controls": include_bisected_lozenge_controls,
+        "bisect_fraction": float(bisect_fraction),
+        "bisect_mode": bisect_mode,
         "recommended_vectorization": {
             "crop": "none",
             "extraction_mode": "threshold",
@@ -172,7 +204,7 @@ def generate_control_set(
             "min_component_size": 1,
             "simplification_epsilon": 0.0,
         },
-        "controls": [clean_meta, broken_meta, scratch_meta, curved_meta],
+        "controls": controls + [scratch_meta, curved_meta],
         "note": (
             "Synthetic lozenge controls are geometric positive controls. "
             "Random scratches preserve approximate stroke count, total length, and bounding box."
@@ -193,6 +225,37 @@ def lozenge_lattice_strokes(width: int, height: int, spacing: int) -> list[Strok
         clipped = _clip_line_to_box(-slope, intercept, width, height)
         if clipped:
             strokes.append(Stroke(clipped))
+    return strokes
+
+
+def bisected_lozenge_lattice_strokes(
+    width: int,
+    height: int,
+    spacing: int,
+    fraction: float = 0.5,
+    mode: str = "mixed",
+    rng: random.Random | None = None,
+) -> list[Stroke]:
+    rng = rng or random.Random(42)
+    fraction = min(1.0, max(0.0, fraction))
+    strokes = list(lozenge_lattice_strokes(width, height, spacing))
+    graph = lozenge_grid_graph(width=width, height=height, spacing=spacing)
+    cycles = enumerate_four_cycles(graph)
+    rng.shuffle(cycles)
+    selected_count = int(round(len(cycles) * fraction))
+    for index, cycle in enumerate(cycles[:selected_count]):
+        ordered = _order_cycle(graph, cycle)
+        if ordered is None:
+            continue
+        points = [_node_xy(graph, node) for node in ordered]
+        if mode == "horizontal":
+            a, b = _horizontal_diagonal(points)
+        elif mode == "diagonal":
+            a, b = points[0], points[2]
+        else:
+            a, b = _horizontal_diagonal(points) if index % 2 == 0 else (points[0], points[2])
+        if math.dist(a, b) > 1e-9:
+            strokes.append(Stroke([a, b]))
     return strokes
 
 
@@ -870,6 +933,42 @@ def lozenge_grid_graph(width: int = 180, height: int = 140, spacing: int = 35) -
     return graph
 
 
+def bisected_lozenge_grid_graph(
+    width: int = 180,
+    height: int = 140,
+    spacing: int = 35,
+    fraction: float = 0.5,
+    mode: str = "mixed",
+    seed: int = 42,
+) -> nx.Graph:
+    rng = random.Random(seed)
+    graph = lozenge_grid_graph(width=width, height=height, spacing=spacing)
+    cycles = enumerate_four_cycles(graph)
+    rng.shuffle(cycles)
+    selected_count = int(round(len(cycles) * min(1.0, max(0.0, fraction))))
+    for index, cycle in enumerate(cycles[:selected_count]):
+        ordered = _order_cycle(graph, cycle)
+        if ordered is None:
+            continue
+        points = [_node_xy(graph, node) for node in ordered]
+        if mode == "horizontal":
+            a_point, b_point = _horizontal_diagonal(points)
+        elif mode == "diagonal":
+            a_point, b_point = points[0], points[2]
+        else:
+            a_point, b_point = _horizontal_diagonal(points) if index % 2 == 0 else (points[0], points[2])
+        node_a = _nearest_graph_node(graph, a_point)
+        node_b = _nearest_graph_node(graph, b_point)
+        if node_a and node_b and node_a != node_b and not graph.has_edge(node_a, node_b):
+            graph.add_edge(
+                node_a,
+                node_b,
+                length_px=math.dist(_node_xy(graph, node_a), _node_xy(graph, node_b)),
+                orientation_deg=_segment_angle(_node_xy(graph, node_a), _node_xy(graph, node_b)),
+            )
+    return graph
+
+
 def save_graphml(graph: nx.Graph, path: str | Path) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -886,6 +985,13 @@ def generate_controls_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-count", type=int, default=1)
     parser.add_argument("--svg-previews", action="store_true")
     parser.add_argument("--stroke-width", type=int, default=3)
+    parser.add_argument("--include-bisected-lozenge-controls", action="store_true")
+    parser.add_argument("--bisect-fraction", type=float, default=0.5)
+    parser.add_argument(
+        "--bisect-mode",
+        choices=("diagonal", "horizontal", "mixed"),
+        default="mixed",
+    )
     parser.add_argument(
         "--control-polarity",
         choices=("bright-on-dark", "dark-on-bright"),
@@ -902,6 +1008,9 @@ def generate_controls_main(argv: list[str] | None = None) -> int:
             svg_previews=args.svg_previews,
             stroke_width=args.stroke_width,
             control_polarity=args.control_polarity,
+            include_bisected_lozenge_controls=args.include_bisected_lozenge_controls,
+            bisect_fraction=args.bisect_fraction,
+            bisect_mode=args.bisect_mode,
         )
         print(f"Wrote {len(metadata['controls'])} controls to {args.output_dir}.")
     else:
@@ -924,6 +1033,9 @@ def generate_controls_main(argv: list[str] | None = None) -> int:
                 svg_previews=args.svg_previews,
                 stroke_width=args.stroke_width,
                 control_polarity=args.control_polarity,
+                include_bisected_lozenge_controls=args.include_bisected_lozenge_controls,
+                bisect_fraction=args.bisect_fraction,
+                bisect_mode=args.bisect_mode,
             )
             manifest["controls"].append(
                 {"seed": seed, "directory": str(seed_dir), "control_count": len(metadata["controls"])}
@@ -972,6 +1084,7 @@ def _write_control(
     svg_previews: bool,
     stroke_width: int,
     control_polarity: str,
+    motif: str = "",
 ) -> dict[str, object]:
     png_path = root / f"{name}.png"
     if control_polarity == "bright-on-dark":
@@ -994,6 +1107,7 @@ def _write_control(
     return {
         "name": name,
         "class": control_class,
+        "motif": motif,
         "image": str(png_path),
         "svg": str(root / f"{name}.svg") if svg_previews else "",
         "stroke_width": stroke_width,
@@ -1104,19 +1218,17 @@ def _control_record(
 
 
 def _metadata_classes(root: Path) -> dict[str, str]:
-    metadata_path = root / "expected_metadata.json"
-    if not metadata_path.exists():
-        return {}
-    try:
-        payload = json.loads(metadata_path.read_text())
-    except json.JSONDecodeError:
-        return {}
     classes: dict[str, str] = {}
-    for control in payload.get("controls", []):
-        name = str(control.get("name", ""))
-        control_class = str(control.get("class", ""))
-        if name and control_class:
-            classes[name.lower()] = control_class
+    for metadata_path in root.rglob("expected_metadata.json"):
+        try:
+            payload = json.loads(metadata_path.read_text())
+        except json.JSONDecodeError:
+            continue
+        for control in payload.get("controls", []):
+            name = str(control.get("name", ""))
+            control_class = str(control.get("class", ""))
+            if name and control_class:
+                classes[name.lower()] = control_class
     return classes
 
 
@@ -1125,6 +1237,8 @@ def _classify_control(label: str, metadata_classes: dict[str, str]) -> str:
     for name, control_class in metadata_classes.items():
         if name in lower:
             return control_class
+    if "bisected_lozenge" in lower or "split_lozenge" in lower:
+        return "bisected_lozenge"
     if "lozenge" in lower or "rhomb" in lower or "diamond" in lower:
         return "lozenge"
     if "random" in lower or "scratch" in lower or "shuffle" in lower:
@@ -1483,6 +1597,20 @@ def _order_nodes_around_centroid(graph: nx.Graph, nodes: list[str]) -> list[str]
     cx = sum(point[0] for point in points.values()) / len(points)
     cy = sum(point[1] for point in points.values()) / len(points)
     return sorted(nodes, key=lambda node: math.atan2(points[node][1] - cy, points[node][0] - cx))
+
+
+def _horizontal_diagonal(points: list[PointF]) -> tuple[PointF, PointF]:
+    pairs = [
+        (points[0], points[2]),
+        (points[1], points[3]),
+    ]
+    return max(pairs, key=lambda pair: abs(pair[0][0] - pair[1][0]))
+
+
+def _nearest_graph_node(graph: nx.Graph, point: PointF) -> str | None:
+    if graph.number_of_nodes() == 0:
+        return None
+    return min((str(node) for node in graph.nodes), key=lambda node: math.dist(_node_xy(graph, node), point))
 
 
 def _node_xy(graph: nx.Graph, node: str) -> PointF:

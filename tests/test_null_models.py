@@ -8,6 +8,7 @@ import networkx as nx
 from engrave2svg.null_models import (
     analyze_graph,
     analyze_graphml,
+    bisected_lozenge_grid_graph,
     compare_null_models,
     detect_open_lozenge_candidates,
     generate_control_set,
@@ -96,6 +97,38 @@ def test_split_diamond_yields_one_bisected_lozenge_candidate(tmp_path: Path):
     assert summary["bisected_lozenge_candidate_count"] == 1
 
 
+def test_generated_bisected_lozenge_control_metadata_and_graph_metrics(tmp_path: Path):
+    metadata = generate_control_set(
+        tmp_path,
+        width=180,
+        height=140,
+        spacing=35,
+        seed=22,
+        include_bisected_lozenge_controls=True,
+        bisect_fraction=0.75,
+        bisect_mode="horizontal",
+    )
+    expected = json.loads((tmp_path / "expected_metadata.json").read_text())
+    bisected = next(control for control in expected["controls"] if control["name"] == "bisected_lozenge_lattice")
+    graph_metrics = analyze_graph(
+        bisected_lozenge_grid_graph(
+            width=180,
+            height=140,
+            spacing=35,
+            fraction=0.75,
+            mode="horizontal",
+            seed=22,
+        )
+    )
+
+    assert len(metadata["controls"]) == 5
+    assert Path(bisected["image"]).exists()
+    assert bisected["class"] == "bisected_lozenge"
+    assert bisected["motif"] == "split_lozenge"
+    assert graph_metrics["adjacent_triangle_pair_count"] > 0
+    assert graph_metrics["bisected_lozenge_candidate_count"] > 0
+
+
 def test_irregular_adjacent_triangles_do_not_make_high_confidence_bisected_lozenge():
     metrics = analyze_graph(_irregular_adjacent_triangles_graph())
 
@@ -111,6 +144,59 @@ def test_lozenge_lattice_has_fewer_triangles_than_triangle_mesh():
 
     assert lozenge["triangle_count"] < triangle_mesh["triangle_count"]
     assert lozenge["bisected_lozenge_candidate_count"] == 0
+
+
+def test_plain_lozenge_and_random_controls_are_low_for_bisected_lozenges():
+    plain = analyze_graph(lozenge_grid_graph(width=180, height=140, spacing=35))
+    random_metrics = analyze_graph(
+        graph_from_strokes(
+            random_scratch_strokes(
+                width=180,
+                height=140,
+                stroke_count=24,
+                target_total_length=1200,
+                rng=random.Random(19),
+            )
+        )
+    )
+
+    assert plain["bisected_lozenge_candidate_count"] == 0
+    assert random_metrics["bisected_lozenge_candidate_count"] == 0
+
+
+def test_compare_groups_bisected_lozenge_controls_separately(tmp_path: Path):
+    controls = tmp_path / "controls"
+    bisected_dir = controls / "bisected_lozenge_lattice"
+    lozenge_dir = controls / "clean_lozenge_lattice"
+    random_dir = controls / "random_scratches"
+    bisected_dir.mkdir(parents=True)
+    lozenge_dir.mkdir()
+    random_dir.mkdir()
+    save_graphml(
+        bisected_lozenge_grid_graph(width=180, height=140, spacing=35, fraction=1.0, mode="horizontal"),
+        bisected_dir / "graph_merged.graphml",
+    )
+    save_graphml(lozenge_grid_graph(width=180, height=140, spacing=35), lozenge_dir / "graph_merged.graphml")
+    save_graphml(
+        graph_from_strokes(random_scratch_strokes(180, 140, 24, 1200, random.Random(20))),
+        random_dir / "graph_merged.graphml",
+    )
+
+    _csv_path, json_path = compare_null_models(
+        observed_graph=bisected_dir / "graph_merged.graphml",
+        observed_metrics=None,
+        controls_dir=controls,
+        output_dir=tmp_path / "comparison",
+    )
+    payload = json.loads(json_path.read_text())
+
+    assert payload["class_aggregates"]["bisected_lozenge"]["n_controls"] == 1
+    assert payload["class_aggregates"]["lozenge"]["n_controls"] == 1
+    assert payload["class_aggregates"]["random"]["n_controls"] == 1
+    assert (
+        payload["class_aggregates"]["bisected_lozenge"]["metrics"]["bisected_lozenge_candidate_count"]["mean"]
+        > 0
+    )
 
 
 def test_random_scratches_have_lower_triangle_structure_than_triangle_mesh():
