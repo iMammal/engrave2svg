@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .manual_svg import ManualSvgConfig, run_manual_svg_pipeline
 from .pipeline import PipelineConfig, run_pipeline
 from .preprocessing import PreprocessParams
 from .ridge_extraction import RidgeParams, parse_sigmas
@@ -14,7 +15,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="engrave2svg",
         description="Convert a lower-panel bitmap engraving tracing into editable SVG centerlines.",
     )
-    parser.add_argument("input", help="Input raster image.")
+    parser.add_argument("input", help="Input raster image or manual trace SVG.")
+    parser.add_argument(
+        "--input-mode",
+        choices=("image", "manual-svg"),
+        default="image",
+        help="Input interpretation mode. Default: image.",
+    )
     parser.add_argument("--output", "-o", help="Output SVG path for a single run.")
     parser.add_argument(
         "--crop",
@@ -102,6 +109,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output PNG path for the length-weighted orientation histogram.",
     )
     parser.add_argument(
+        "--manual-layer",
+        default="Manual Trace",
+        help='Manual SVG layer name to analyze when --input-mode manual-svg. Default: "Manual Trace".',
+    )
+    parser.add_argument(
+        "--svg-snap-radius",
+        type=float,
+        default=3.0,
+        help="Merge manual SVG endpoints/intersections within this SVG-unit radius. Default: 3.0.",
+    )
+    parser.add_argument(
+        "--svg-intersection-split",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Split crossing manual SVG strokes into graph nodes. Default: true.",
+    )
+    parser.add_argument(
+        "--svg-flatten-tolerance",
+        type=float,
+        default=1.0,
+        help="Curve flattening tolerance in SVG user units for manual SVG input. Default: 1.0.",
+    )
+    parser.add_argument(
         "--sensitivity",
         action="store_true",
         help="Run the default deterministic parameter sensitivity batch.",
@@ -150,6 +180,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
+    if args.sensitivity and args.input_mode == "manual-svg":
+        build_parser().error("--sensitivity is only supported for --input-mode image.")
+
     if args.sensitivity:
         summary_path = run_sensitivity(
             input_path=args.input,
@@ -163,17 +196,36 @@ def main(argv: list[str] | None = None) -> int:
     if not args.output:
         build_parser().error("--output is required unless --sensitivity is set.")
 
-    metrics = run_pipeline(
-        input_path=args.input,
-        output_path=Path(args.output),
-        debug_dir=args.debug,
-        config=config,
-        metrics_path=args.metrics,
-        graph_path=args.graph,
-        nodes_csv_path=args.nodes_csv,
-        edges_csv_path=args.edges_csv,
-        orientation_hist_path=args.orientation_hist,
-    )
+    if args.input_mode == "manual-svg":
+        metrics = run_manual_svg_pipeline(
+            input_path=args.input,
+            output_path=Path(args.output),
+            debug_dir=args.debug,
+            config=ManualSvgConfig(
+                manual_layer=args.manual_layer,
+                snap_radius=args.svg_snap_radius,
+                intersection_split=args.svg_intersection_split,
+                flatten_tolerance=args.svg_flatten_tolerance,
+                stroke_width=args.stroke_width,
+            ),
+            metrics_path=args.metrics,
+            graph_path=args.graph,
+            nodes_csv_path=args.nodes_csv,
+            edges_csv_path=args.edges_csv,
+            orientation_hist_path=args.orientation_hist,
+        )
+    else:
+        metrics = run_pipeline(
+            input_path=args.input,
+            output_path=Path(args.output),
+            debug_dir=args.debug,
+            config=config,
+            metrics_path=args.metrics,
+            graph_path=args.graph,
+            nodes_csv_path=args.nodes_csv,
+            edges_csv_path=args.edges_csv,
+            orientation_hist_path=args.orientation_hist,
+        )
 
     print(
         f"Wrote {metrics.output_svg} with {metrics.paths} paths "

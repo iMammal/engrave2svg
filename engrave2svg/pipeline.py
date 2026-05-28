@@ -100,6 +100,11 @@ class PipelineMetrics:
     edges_raw_csv: str = ""
     edges_merged_csv: str = ""
     orientation_histogram: str = ""
+    input_mode: str = "image"
+    manual_layer: str = ""
+    svg_snap_radius: float = 0.0
+    svg_flatten_tolerance: float = 0.0
+    svg_intersection_split: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -245,6 +250,7 @@ def run_pipeline(
         edges_raw_csv=written.get("edges_raw_csv", ""),
         edges_merged_csv=written.get("edges_merged_csv", ""),
         orientation_histogram=written.get("orientation_histogram", ""),
+        input_mode="image",
     )
 
     if metrics_path:

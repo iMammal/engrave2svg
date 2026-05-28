@@ -67,6 +67,52 @@ def build_engraving_graphs(
     )
 
 
+def build_graph_bundle_from_raw(
+    raw_graph: nx.MultiGraph,
+    node_merge_radius: float = 0.0,
+    same_component_only: bool = True,
+) -> EngravingGraphBundle:
+    raw_stats = graph_statistics(raw_graph)
+    merged_graph, merge_report = _merge_graph_nodes(
+        raw_graph,
+        node_merge_radius,
+        same_component_only=same_component_only,
+    )
+    merged_stats = graph_statistics(merged_graph)
+    orientation = orientation_statistics(merged_graph)
+    metrics = {
+        "node_merge_radius": float(node_merge_radius),
+        "raw": raw_stats,
+        "merged": merged_stats,
+        "merge_report": merge_report,
+        "orientation": orientation,
+        "raw_node_count": raw_stats["node_count"],
+        "raw_endpoint_count": raw_stats["endpoints"],
+        "raw_junction_count": raw_stats["junctions"],
+        "raw_edge_count": raw_stats["edge_count"],
+        "merged_node_count": merged_stats["node_count"],
+        "merged_endpoint_count": merged_stats["endpoints"],
+        "merged_junction_count": merged_stats["junctions"],
+        "merged_edge_count": merged_stats["edge_count"],
+        "connected_components": merged_stats["connected_components"],
+        "total_traced_length_px": merged_stats["total_traced_length_px"],
+        "dominant_angle_peaks": orientation["peaks"],
+        "node_degree_histogram": merged_stats["degree_distribution"],
+        "connected_component_size_histogram": merged_stats[
+            "connected_component_size_histogram"
+        ],
+        "largest_connected_component_fraction": merged_stats[
+            "largest_connected_component_fraction"
+        ],
+    }
+    return EngravingGraphBundle(
+        raw_graph=raw_graph,
+        merged_graph=merged_graph,
+        metrics=metrics,
+        orientation=orientation,
+    )
+
+
 def graph_statistics(graph: nx.MultiGraph) -> dict[str, object]:
     degrees = {node: int(degree) for node, degree in graph.degree()}
     degree_distribution: dict[str, int] = {}
@@ -534,7 +580,9 @@ def _trace_cycle_path(
 
 
 def _merge_graph_nodes(
-    raw_graph: nx.MultiGraph, radius: float
+    raw_graph: nx.MultiGraph,
+    radius: float,
+    same_component_only: bool = True,
 ) -> tuple[nx.MultiGraph, dict[str, object]]:
     if radius <= 0 or raw_graph.number_of_nodes() == 0:
         merged = raw_graph.copy()
@@ -571,7 +619,7 @@ def _merge_graph_nodes(
     nodes = sorted(raw_graph.nodes)
     for index, node in enumerate(nodes):
         for other in nodes[index + 1 :]:
-            if components.get(node) != components.get(other):
+            if same_component_only and components.get(node) != components.get(other):
                 continue
             if _node_distance(raw_graph, node, other) <= radius:
                 union(node, other)

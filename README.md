@@ -194,6 +194,30 @@ The comparison writes `comparison_summary.csv`, `comparison_summary.json`, `inva
 
 Closed lozenge candidates are deliberately conservative. The detector operates on graph topology and node coordinates, starts from simple 4-cycles, and checks side lengths, interior angles, diagonal lengths, aspect ratio, area, and approximate parallelism of opposite sides. A 4-cycle is not automatically called a lozenge. Open/implied lozenge candidates are reported separately: they do not require a closed 4-cycle, but require two approximately parallel side pairs from crossing orientation families and include a confidence score. The output should be read as statistical support for or against mesh-like geometric structure relative to the supplied controls, not as evidence of intention.
 
+## Manual SVG Trace Analysis
+
+Manual SVG mode analyzes semi-manual centerline traces directly, without rasterization or automatic image vectorization. This is intended for reviewer-facing upper-bound or interpretive reconstructions: it can ask what graph metrics follow from a hand-drawn trace, but it must not be described as automatic recovery from the image.
+
+In Inkscape, place the source photograph or raster extraction in a locked background layer, create a layer named `Manual Trace`, and draw centerline strokes with paths, lines, or polylines. Keep the manually interpreted strokes in that layer only; hidden/background layers and raster images are ignored by `--input-mode manual-svg`.
+
+```bash
+python engrave2svg.py manual_trace.svg \
+  --input-mode manual-svg \
+  --manual-layer "Manual Trace" \
+  --svg-snap-radius 3.0 \
+  --svg-intersection-split \
+  --svg-flatten-tolerance 1.0 \
+  --output manual_trace_graph.svg \
+  --metrics manual_trace_metrics.json \
+  --graph manual_trace.graphml \
+  --nodes-csv manual_trace_nodes.csv \
+  --edges-csv manual_trace_edges.csv \
+  --orientation-hist manual_trace_orientation.png \
+  --debug manual_trace_debug
+```
+
+Manual SVG mode preserves SVG/user coordinates, flattens Bezier curves into polylines, splits crossing strokes into shared graph nodes by default, and snaps nearby endpoints/intersections using `--svg-snap-radius`. It writes the same canonical GraphML/CSV/JSON metric products as image mode, with `input_mode="manual-svg"` plus the manual layer, snap radius, flatten tolerance, and intersection-split flag recorded for reproducibility. The debug directory includes `manual_trace_debug.svg` with split edges and snapped graph nodes overlaid.
+
 ## Example
 
 ```bash
