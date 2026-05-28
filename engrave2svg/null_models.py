@@ -811,6 +811,7 @@ def compare_null_models(
     invalid_controls = [item for item in controls if not item["valid"]]
     null_controls = [item for item in valid_controls if item["class"] == "random"]
     lozenge_controls = [item for item in valid_controls if item["class"] == "lozenge"]
+    control_classes = sorted({str(item["class"]) for item in valid_controls})
     class_aggregates = _class_aggregates(valid_controls)
 
     rows: list[dict[str, object]] = []
@@ -820,28 +821,45 @@ def compare_null_models(
             float(item["metrics"][metric]) for item in lozenge_controls if metric in item["metrics"]
         ]
         observed_value = float(observed.get(metric, 0.0))
-        rows.append(
-            {
-                "metric": metric,
-                "observed": observed_value,
-                "null_mean": _mean(null_values),
-                "null_sd": _sd(null_values),
-                "null_percentile": _percentile(observed_value, null_values),
-                "empirical_p_greater_equal": _empirical_p(observed_value, null_values, "greater"),
-                "empirical_p_less_equal": _empirical_p(observed_value, null_values, "less"),
-                "lozenge_control_n": len(lozenge_values),
-                "lozenge_control_mean": _mean(lozenge_values),
-                "lozenge_control_sd": _sd(lozenge_values),
-                "random_control_n": len(null_values),
-                "random_control_mean": _mean(null_values),
-                "random_control_sd": _sd(null_values),
-                "closer_to": _closer_to(observed_value, lozenge_values, null_values),
-            }
-        )
+        class_values = {
+            control_class: [
+                float(item["metrics"][metric])
+                for item in valid_controls
+                if item["class"] == control_class and metric in item["metrics"]
+            ]
+            for control_class in control_classes
+        }
+        row = {
+            "metric": metric,
+            "observed": observed_value,
+            "null_mean": _mean(null_values),
+            "null_sd": _sd(null_values),
+            "null_percentile": _percentile(observed_value, null_values),
+            "empirical_p_greater_equal": _empirical_p(observed_value, null_values, "greater"),
+            "empirical_p_less_equal": _empirical_p(observed_value, null_values, "less"),
+            "lozenge_control_n": len(lozenge_values),
+            "lozenge_control_mean": _mean(lozenge_values),
+            "lozenge_control_sd": _sd(lozenge_values),
+            "random_control_n": len(null_values),
+            "random_control_mean": _mean(null_values),
+            "random_control_sd": _sd(null_values),
+            "closer_to": _closer_to(observed_value, lozenge_values, null_values),
+            "closest_class": _closest_class(observed_value, class_values),
+        }
+        for control_class in control_classes:
+            values = class_values[control_class]
+            prefix = f"{control_class}_control"
+            row[f"{prefix}_n"] = len(values)
+            row[f"{prefix}_mean"] = _mean(values)
+            row[f"{prefix}_sd"] = _sd(values)
+            row[f"{prefix}_min"] = min(values) if values else 0.0
+            row[f"{prefix}_max"] = max(values) if values else 0.0
+        rows.append(row)
 
     csv_path = root / "comparison_summary.csv"
+    fieldnames = _comparison_fieldnames(rows)
     with csv_path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -1402,6 +1420,29 @@ def _write_invalid_controls(path: Path, invalid_controls: list[dict[str, object]
             )
 
 
+def _comparison_fieldnames(rows: list[dict[str, object]]) -> list[str]:
+    preferred = [
+        "metric",
+        "observed",
+        "null_mean",
+        "null_sd",
+        "null_percentile",
+        "empirical_p_greater_equal",
+        "empirical_p_less_equal",
+        "lozenge_control_n",
+        "lozenge_control_mean",
+        "lozenge_control_sd",
+        "random_control_n",
+        "random_control_mean",
+        "random_control_sd",
+        "closer_to",
+        "closest_class",
+    ]
+    keys = {key for row in rows for key in row}
+    ordered = [key for key in preferred if key in keys]
+    return ordered + sorted(keys - set(ordered))
+
+
 def _class_aggregates(controls: list[dict[str, object]]) -> dict[str, dict[str, object]]:
     aggregates: dict[str, dict[str, object]] = {}
     for control_class in sorted({str(control["class"]) for control in controls}):
@@ -1433,23 +1474,30 @@ def _write_metric_plots(
     controls: list[dict[str, object]],
     output_dir: Path,
 ) -> None:
+    control_classes = sorted({str(control["class"]) for control in controls})
+    palette = [
+        (70, 130, 190),
+        (70, 150, 90),
+        (180, 110, 55),
+        (140, 90, 170),
+        (80, 160, 160),
+    ]
     for metric in PLOT_METRICS:
         row = next((item for item in rows if item["metric"] == metric), None)
         if not row:
             continue
-        image = np.full((260, 420, 3), 255, dtype=np.uint8)
-        random_values = [
-            float(control["metrics"][metric])
-            for control in controls
-            if control["class"] == "random" and metric in control["metrics"]
-        ]
-        lozenge_values = [
-            float(control["metrics"][metric])
-            for control in controls
-            if control["class"] == "lozenge" and metric in control["metrics"]
-        ]
+        width = max(420, 120 + 110 * max(1, len(control_classes)))
+        image = np.full((280, width, 3), 255, dtype=np.uint8)
+        class_values = {
+            control_class: [
+                float(control["metrics"][metric])
+                for control in controls
+                if control["class"] == control_class and metric in control["metrics"]
+            ]
+            for control_class in control_classes
+        }
         observed = float(row["observed"])
-        values = random_values + lozenge_values + [observed]
+        values = [value for items in class_values.values() for value in items] + [observed]
         minimum = min(values) if values else 0.0
         maximum = max(values) if values else 1.0
         if math.isclose(minimum, maximum):
@@ -1457,16 +1505,16 @@ def _write_metric_plots(
             maximum += 0.5
         plot_top, plot_bottom = 45, 205
         cv2.line(image, (55, plot_top), (55, plot_bottom), (40, 40, 40), 1)
-        cv2.line(image, (55, plot_bottom), (380, plot_bottom), (40, 40, 40), 1)
-        for x, label, class_values, color in (
-            (155, "random", random_values, (70, 130, 190)),
-            (275, "lozenge", lozenge_values, (70, 150, 90)),
-        ):
-            _draw_distribution(image, class_values, x, plot_top, plot_bottom, minimum, maximum, color)
-            cv2.putText(image, label, (x - 35, 232), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.line(image, (55, plot_bottom), (width - 40, plot_bottom), (40, 40, 40), 1)
+        for index, control_class in enumerate(control_classes):
+            x = 115 + index * 110
+            color = palette[index % len(palette)]
+            _draw_distribution(image, class_values[control_class], x, plot_top, plot_bottom, minimum, maximum, color)
+            label = _plot_label(control_class)
+            cv2.putText(image, label, (x - 42, 238), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
         observed_y = _plot_y(observed, plot_top, plot_bottom, minimum, maximum)
-        cv2.line(image, (70, observed_y), (370, observed_y), (40, 40, 210), 1)
-        cv2.putText(image, "observed", (310, max(plot_top + 12, observed_y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (40, 40, 160), 1, cv2.LINE_AA)
+        cv2.line(image, (70, observed_y), (width - 55, observed_y), (40, 40, 210), 1)
+        cv2.putText(image, "observed", (width - 110, max(plot_top + 12, observed_y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (40, 40, 160), 1, cv2.LINE_AA)
         cv2.putText(image, metric[:36], (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
         cv2.imwrite(str(output_dir / f"{metric}.png"), image)
 
@@ -1505,6 +1553,12 @@ def _draw_distribution(
 def _plot_y(value: float, plot_top: int, plot_bottom: int, minimum: float, maximum: float) -> int:
     fraction = (value - minimum) / (maximum - minimum)
     return int(round(plot_bottom - fraction * (plot_bottom - plot_top)))
+
+
+def _plot_label(control_class: str) -> str:
+    if control_class == "bisected_lozenge":
+        return "bisected"
+    return control_class[:12]
 
 
 def _orientation_histogram(orientations: list[float], lengths: list[float], bins: int = 18) -> list[float]:
@@ -1718,6 +1772,19 @@ def _closer_to(value: float, lozenge_values: list[float], random_values: list[fl
     if random_distance < lozenge_distance:
         return "random_controls"
     return "tie"
+
+
+def _closest_class(value: float, class_values: dict[str, list[float]]) -> str:
+    distances = {
+        control_class: abs(value - _mean(values))
+        for control_class, values in class_values.items()
+        if values
+    }
+    if not distances:
+        return "undetermined"
+    best_distance = min(distances.values())
+    winners = sorted(control_class for control_class, distance in distances.items() if math.isclose(distance, best_distance))
+    return winners[0] if len(winners) == 1 else "tie"
 
 
 def _interpolate(a: PointF, b: PointF, t: float) -> PointF:

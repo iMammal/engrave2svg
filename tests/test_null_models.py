@@ -199,6 +199,50 @@ def test_compare_groups_bisected_lozenge_controls_separately(tmp_path: Path):
     )
 
 
+def test_compare_rows_include_all_control_classes_and_closest_class(tmp_path: Path):
+    controls = tmp_path / "controls"
+    bisected_dir = controls / "bisected_lozenge_lattice"
+    lozenge_dir = controls / "clean_lozenge_lattice"
+    random_dir = controls / "random_scratches"
+    bisected_dir.mkdir(parents=True)
+    lozenge_dir.mkdir()
+    random_dir.mkdir()
+    bisected_graph = bisected_lozenge_grid_graph(
+        width=180,
+        height=140,
+        spacing=35,
+        fraction=1.0,
+        mode="horizontal",
+    )
+    save_graphml(bisected_graph, bisected_dir / "graph_merged.graphml")
+    save_graphml(lozenge_grid_graph(width=180, height=140, spacing=35), lozenge_dir / "graph_merged.graphml")
+    save_graphml(
+        graph_from_strokes(random_scratch_strokes(180, 140, 24, 1200, random.Random(23))),
+        random_dir / "graph_merged.graphml",
+    )
+
+    csv_path, json_path = compare_null_models(
+        observed_graph=bisected_dir / "graph_merged.graphml",
+        observed_metrics=None,
+        controls_dir=controls,
+        output_dir=tmp_path / "comparison_rows",
+    )
+    rows = list(csv.DictReader(csv_path.open()))
+    payload = json.loads(json_path.read_text())
+    by_metric = {row["metric"]: row for row in rows}
+    row = by_metric["bisected_lozenge_candidate_count"]
+
+    assert payload["class_aggregates"]["bisected_lozenge"]["n_controls"] == 1
+    assert "bisected_lozenge_control_mean" in row
+    assert "bisected_lozenge_control_sd" in row
+    assert "bisected_lozenge_control_n" in row
+    assert "bisected_lozenge_control_min" in row
+    assert "bisected_lozenge_control_max" in row
+    assert row["closest_class"] == "bisected_lozenge"
+    assert row["random_control_mean"] != ""
+    assert row["lozenge_control_mean"] != ""
+
+
 def test_random_scratches_have_lower_triangle_structure_than_triangle_mesh():
     triangle_mesh = analyze_graph(_triangle_mesh_graph())
     scratches = analyze_graph(
