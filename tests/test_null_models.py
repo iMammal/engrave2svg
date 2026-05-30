@@ -243,6 +243,56 @@ def test_compare_rows_include_all_control_classes_and_closest_class(tmp_path: Pa
     assert row["lozenge_control_mean"] != ""
 
 
+def test_random_empirical_inference_flags_observed_outside_random(tmp_path: Path):
+    controls = tmp_path / "controls"
+    for index, value in enumerate([1, 2, 3, 4, 5]):
+        _write_metric_control(controls / f"random_{index}" / "metrics.json", triangle_count=value)
+    observed = tmp_path / "observed_metrics.json"
+    _write_metric_control(observed, triangle_count=10)
+
+    csv_path, json_path = compare_null_models(
+        observed_graph=None,
+        observed_metrics=observed,
+        controls_dir=controls,
+        output_dir=tmp_path / "comparison_outside",
+    )
+    row = {item["metric"]: item for item in csv.DictReader(csv_path.open())}["triangle_count"]
+    payload = json.loads(json_path.read_text())
+
+    assert float(row["random_percentile"]) == 100.0
+    assert float(row["random_empirical_p_upper"]) == 1 / 6
+    assert float(row["random_empirical_p_lower"]) == 1.0
+    assert float(row["random_empirical_p_two_sided"]) == 2 / 6
+    assert float(row["random_zscore"]) > 2.0
+    assert any(item["metric"] == "triangle_count" for item in payload["significance_summary"])
+    assert (tmp_path / "comparison_outside" / "random_percentiles.png").exists()
+    assert (tmp_path / "comparison_outside" / "random_zscores.png").exists()
+
+
+def test_random_empirical_inference_keeps_observed_inside_random_nonsignificant(tmp_path: Path):
+    controls = tmp_path / "controls"
+    for index, value in enumerate([1, 2, 3, 4, 5]):
+        _write_metric_control(controls / f"random_{index}" / "metrics.json", triangle_count=value)
+    observed = tmp_path / "observed_metrics.json"
+    _write_metric_control(observed, triangle_count=3)
+
+    csv_path, json_path = compare_null_models(
+        observed_graph=None,
+        observed_metrics=observed,
+        controls_dir=controls,
+        output_dir=tmp_path / "comparison_inside",
+    )
+    row = {item["metric"]: item for item in csv.DictReader(csv_path.open())}["triangle_count"]
+    payload = json.loads(json_path.read_text())
+
+    assert float(row["random_percentile"]) == 50.0
+    assert float(row["random_empirical_p_upper"]) == 4 / 6
+    assert float(row["random_empirical_p_lower"]) == 4 / 6
+    assert float(row["random_empirical_p_two_sided"]) == 1.0
+    assert float(row["random_zscore"]) == 0.0
+    assert not any(item["metric"] == "triangle_count" for item in payload["significance_summary"])
+
+
 def test_random_scratches_have_lower_triangle_structure_than_triangle_mesh():
     triangle_mesh = analyze_graph(_triangle_mesh_graph())
     scratches = analyze_graph(
@@ -558,3 +608,22 @@ def _nonmatching_triangle_mesh_graph() -> nx.Graph:
     for source, target in (("a", "b"), ("a", "c"), ("b", "c"), ("b", "d"), ("c", "d")):
         graph.add_edge(source, target)
     return graph
+
+
+def _write_metric_control(path: Path, triangle_count: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "graph_metrics": {
+                    "node_count": 10,
+                    "edge_count": 12,
+                    "endpoint_count": 2,
+                    "junction_count": 4,
+                    "total_traced_length": 100.0,
+                    "cycle_count": max(1, triangle_count),
+                    "triangle_count": triangle_count,
+                }
+            }
+        )
+    )

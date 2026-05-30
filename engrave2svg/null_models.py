@@ -837,6 +837,11 @@ def compare_null_models(
             "null_percentile": _percentile(observed_value, null_values),
             "empirical_p_greater_equal": _empirical_p(observed_value, null_values, "greater"),
             "empirical_p_less_equal": _empirical_p(observed_value, null_values, "less"),
+            "random_zscore": _zscore(observed_value, null_values),
+            "random_percentile": _random_percentile(observed_value, null_values),
+            "random_empirical_p_two_sided": _empirical_p_two_sided(observed_value, null_values),
+            "random_empirical_p_upper": _empirical_p(observed_value, null_values, "greater"),
+            "random_empirical_p_lower": _empirical_p(observed_value, null_values, "less"),
             "lozenge_control_n": len(lozenge_values),
             "lozenge_control_mean": _mean(lozenge_values),
             "lozenge_control_sd": _sd(lozenge_values),
@@ -869,6 +874,7 @@ def compare_null_models(
         "invalid_controls": invalid_controls,
         "class_aggregates": class_aggregates,
         "comparisons": rows,
+        "significance_summary": _significance_summary(rows),
         "interpretation_note": (
             "These summaries provide statistical support for or against mesh-like geometric "
             "structure relative to the supplied controls. They do not establish intention."
@@ -878,6 +884,7 @@ def compare_null_models(
     json_path.write_text(json.dumps(payload, indent=2) + "\n")
     _write_invalid_controls(root / "invalid_controls.csv", invalid_controls)
     _write_metric_plots(rows, valid_controls, root)
+    _write_random_inference_plots(rows, root)
     if observed_graph:
         write_lozenge_outputs(observed_graph, root)
     return csv_path, json_path
@@ -1429,6 +1436,11 @@ def _comparison_fieldnames(rows: list[dict[str, object]]) -> list[str]:
         "null_percentile",
         "empirical_p_greater_equal",
         "empirical_p_less_equal",
+        "random_zscore",
+        "random_percentile",
+        "random_empirical_p_two_sided",
+        "random_empirical_p_upper",
+        "random_empirical_p_lower",
         "lozenge_control_n",
         "lozenge_control_mean",
         "lozenge_control_sd",
@@ -1517,6 +1529,65 @@ def _write_metric_plots(
         cv2.putText(image, "observed", (width - 110, max(plot_top + 12, observed_y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (40, 40, 160), 1, cv2.LINE_AA)
         cv2.putText(image, metric[:36], (15, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
         cv2.imwrite(str(output_dir / f"{metric}.png"), image)
+
+
+def _write_random_inference_plots(rows: list[dict[str, object]], output_dir: Path) -> None:
+    _write_row_bar_plot(
+        rows,
+        output_dir / "random_percentiles.png",
+        value_key="random_percentile",
+        title="Observed percentile within random controls",
+        x_min=0.0,
+        x_max=100.0,
+        reference_lines=(2.5, 50.0, 97.5),
+    )
+    z_values = [abs(float(row.get("random_zscore", 0.0))) for row in rows]
+    z_max = max(3.0, max(z_values, default=0.0))
+    _write_row_bar_plot(
+        rows,
+        output_dir / "random_zscores.png",
+        value_key="random_zscore",
+        title="Observed z-score vs random controls",
+        x_min=-z_max,
+        x_max=z_max,
+        reference_lines=(-2.0, 0.0, 2.0),
+    )
+
+
+def _write_row_bar_plot(
+    rows: list[dict[str, object]],
+    path: Path,
+    value_key: str,
+    title: str,
+    x_min: float,
+    x_max: float,
+    reference_lines: tuple[float, ...],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plot_rows = rows[: min(len(rows), 28)]
+    width = 980
+    row_h = 24
+    margin_left = 270
+    margin_right = 35
+    margin_top = 45
+    height = margin_top + row_h * max(1, len(plot_rows)) + 35
+    image = np.full((height, width, 3), 255, dtype=np.uint8)
+    cv2.putText(image, title, (20, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+    chart_w = width - margin_left - margin_right
+    for reference in reference_lines:
+        if x_min <= reference <= x_max:
+            x = margin_left + int(chart_w * (reference - x_min) / (x_max - x_min))
+            cv2.line(image, (x, margin_top - 10), (x, height - 25), (215, 215, 215), 1)
+    for index, row in enumerate(plot_rows):
+        y = margin_top + index * row_h
+        value = float(row.get(value_key, 0.0))
+        zero_x = margin_left + int(chart_w * (0.0 - x_min) / (x_max - x_min))
+        value_x = margin_left + int(chart_w * (max(x_min, min(x_max, value)) - x_min) / (x_max - x_min))
+        x0, x1 = sorted((zero_x, value_x)) if x_min < 0 < x_max else (margin_left, value_x)
+        cv2.rectangle(image, (x0, y + 4), (max(x0 + 1, x1), y + 16), (70, 130, 190), -1)
+        cv2.putText(image, str(row.get("metric", ""))[:36], (12, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(image, f"{value:.3g}", (width - 70, y + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1, cv2.LINE_AA)
+    cv2.imwrite(str(path), image)
 
 
 def _draw_distribution(
@@ -1760,6 +1831,48 @@ def _empirical_p(value: float, distribution: list[float], tail: str) -> float:
     else:
         count = sum(1 for item in distribution if item <= value)
     return float((count + 1) / (len(distribution) + 1))
+
+
+def _empirical_p_two_sided(value: float, distribution: list[float]) -> float:
+    if not distribution:
+        return 1.0
+    return float(min(1.0, 2.0 * min(_empirical_p(value, distribution, "greater"), _empirical_p(value, distribution, "less"))))
+
+
+def _random_percentile(value: float, distribution: list[float]) -> float:
+    if not distribution:
+        return 0.0
+    less = sum(1 for item in distribution if item < value)
+    equal = sum(1 for item in distribution if item == value)
+    return float((less + 0.5 * equal) / len(distribution) * 100.0)
+
+
+def _zscore(value: float, distribution: list[float]) -> float:
+    sd = _sd(distribution)
+    if sd <= 0:
+        return 0.0
+    return float((value - _mean(distribution)) / sd)
+
+
+def _significance_summary(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    summary: list[dict[str, object]] = []
+    for row in rows:
+        zscore = float(row.get("random_zscore", 0.0))
+        p_two_sided = float(row.get("random_empirical_p_two_sided", 1.0))
+        if abs(zscore) < 2.0 and p_two_sided > 0.05:
+            continue
+        summary.append(
+            {
+                "metric": row["metric"],
+                "observed": row["observed"],
+                "random_mean": row.get("random_control_mean", 0.0),
+                "random_sd": row.get("random_control_sd", 0.0),
+                "random_zscore": zscore,
+                "random_percentile": row.get("random_percentile", 0.0),
+                "random_empirical_p_two_sided": p_two_sided,
+            }
+        )
+    return summary
 
 
 def _closer_to(value: float, lozenge_values: list[float], random_values: list[float]) -> str:

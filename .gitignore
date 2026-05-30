@@ -37,3 +37,4 @@ sensitivity_manifest.csv
 .pytest_cache/
 .mypy_cache/
 /importtime.log
+/input/
